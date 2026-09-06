@@ -13,7 +13,7 @@ argument-hint: "<#N | #A-B | #1,#3 | \"description\"> [auto] [parallel=N] [opus]
 # on /commit; the other five must stay model-invocable because /work and /automerge chain to them
 # via the Skill tool, which counts as Claude invoking a skill.
 disable-model-invocation: true
-allowed-tools: Bash(__CLAUDE_HOME__/lib/branches.sh)
+allowed-tools: Bash(__CLAUDE_HOME__/lib/branches.sh), Bash(bash __CLAUDE_HOME__/lib/stage-processes.sh:*)
 ---
 
 Repo context, pre-resolved (see `~/.claude/lib/branches.sh`; empty values mean unresolved —
@@ -199,7 +199,19 @@ For each issue `#{n}`, dispatch the plan stage, and once it completes, dispatch 
 > owns the merge at every `{parallel}`, because merges are serialized across the whole queue and a
 > subagent holding one issue cannot see that queue (see "Merge queue").
 >
-> When done, report back concisely: PR number, status (PR open / blocked), and any blocker reason.
+> **Every process you start must end before you return.** Do not use `&`, `nohup`, or `disown`.
+> Use foreground calls with `timeout: 600000`, or report a blocker. If a background process is
+> genuinely unavoidable, capture its PID from `$!` on the same line that starts it, and end it by
+> that PID.
+>
+> **Never build that cleanup on `jobs -p`.** Under a non-interactive `zsh -c` it returns nothing,
+> so `kill $(jobs -p)` ends nothing and the shell still prints whatever success message follows it.
+> One stage shipped exactly that and left twenty busy loops running for 3h26m at 601.8% CPU, with
+> the load average at 195.63. Teardown now sweeps for orphans and will report yours.
+>
+> When done, report back concisely: PR number, status (PR open / blocked), any blocker reason,
+> and `procs=N` — how many background processes you started and ended. `procs=0` is the
+> expected answer.
 
 Because each stage is given a single `#{n}` and never re-invokes `/work` itself, there is no
 recursion — the orchestrator dispatches stages directly rather than delegating to another `/work`
@@ -221,7 +233,14 @@ silent while a stage is healthy precisely because "still working" is not news.
 
 ### Durability sentinel
 
-Before dispatching a stage, write a `work-active-{n}` sentinel; delete it when the stage ends (success
+Before dispatching a stage, take the process snapshot the teardown sweep compares against:
+
+```bash
+bash __CLAUDE_HOME__/lib/stage-processes.sh snapshot {n}
+```
+
+Without it the sweep in teardown step 5 exits 5 and reports **blind**, because it cannot tell the
+stage's processes from yours. Then write a `work-active-{n}` sentinel; delete it when the stage ends (success
 or blocker). This is what scopes the `asyncRewake` hooks in `~/.claude/settings.json` to *this* run, so
 a stalled orchestrator gets rewaked instead of idling — and so the hooks stay inert in unrelated
 sessions. It is the `/work` counterpart of `/automerge`'s per-PR `automerge-active-{pr}` sentinel, and the hook
@@ -287,7 +306,21 @@ released keeps running for the rest of the session. In order:
    which stops without merging leaves one on disk, and nothing else here would remove it:
    `session-cleanup.sh` only catches it at `SessionEnd`, hours later. Until then it costs a rewake
    turn every time the session goes idle.
-5. **Release the issue's worktree**, if one was provisioned (see "Concurrency and isolation").
+5. **Sweep the processes the stage orphaned:**
+
+   ```bash
+   bash __CLAUDE_HOME__/lib/stage-processes.sh sweep {n} --tree "{tree}"
+   ```
+
+   **Before the worktree release, not after.** A process still holding a cwd inside the worktree
+   makes `git worktree remove` fail, and step 6 would then report uncommitted-work contention that
+   is really a leaked process. At `{parallel}`=1 pass the repo root as `--tree`.
+
+   Read the exit code. `0` is clean. `3` means something was left for you: an orphan outside the
+   tree, or one that would not end. `5` means the sweep was **blind** — no snapshot was taken
+   before dispatch, so orphans cannot be ruled out. Blind is not clean; record it as a blocker
+   rather than reporting the stage torn down.
+6. **Release the issue's worktree**, if one was provisioned (see "Concurrency and isolation").
 
 **Recording a blocker is not a substitute for teardown.** It is the opposite: a blocked issue's
 monitor and teammate are precisely the ones still running. Every row of the caps table below, and
@@ -326,7 +359,7 @@ A duplicate poller is recoverable; two teammates committing to one branch is not
 - **Worktree path is session-scoped**, so cleanup can tell whose it is:
   `{repo_root}/.claude-work/$CLAUDE_CODE_SESSION_ID/issue-{n}`. Exclude `.claude-work/` alongside
   `.claude/plans/` (same §0c `info/exclude` step).
-- **Release it when the issue is done** — this is step 4 of Stage teardown, and it applies on every
+- **Release it when the issue is done** — this is step 6 of Stage teardown, and it applies on every
   exit, including blockers:
 
   ```bash
@@ -342,7 +375,7 @@ A duplicate poller is recoverable; two teammates committing to one branch is not
   out ends up pinned to a deleted branch — and `gh pr checkout` inside `/automerge` also fails while
   another worktree holds the branch. The exec stage is *standing in* the worktree that has to go, so
   it **never invokes `/automerge`**: it stops after `/pr` and returns the PR number (its dispatch
-  prompt says so). The **orchestrator** then (1) releases the issue's worktree (teardown step 5), and
+  prompt says so). The **orchestrator** then (1) releases the issue's worktree (teardown step 6), and
   (2) enters the PR into the merge queue below, which dispatches the merge as its own stage — a
   `{exec_agent}` subagent whose prompt is `/automerge #{pr_number}` — keeping the issue's sentinel in
   place (rewrite it with `"stage": "exec"` refreshed) so the 2 h cap and rewake guard keep covering
@@ -369,7 +402,7 @@ the whole run:
   including at `{parallel}>1`, where several exec stages legitimately overlap.
 - **FIFO in `{queue}` order.** Issue k's PR merges before issue k+1's. An issue whose exec stage
   finished early waits its turn.
-- **A waiting issue is `merge-queued`.** Release its worktree (teardown step 5, already required
+- **A waiting issue is `merge-queued`.** Release its worktree (teardown step 6, already required
   before any merge), `TaskStop` its Monitor, and **keep** its `work-active-{n}` sentinel. Nothing is
   working on it, so leaving the Monitor armed would tear down a healthy PR at the 10-minute stall
   rule for the crime of waiting. Queue depth is bounded by `{parallel}`, so it needs no cap of its

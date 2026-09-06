@@ -21,6 +21,15 @@ prevents is *quiet* — it looks like success until much later.
 - **`disown`ed processes outlive `TaskStop`** — they reparent to init and keep running for the rest
   of the session. Whatever you detach, report its PID and log path so it can be reaped
   (`/reap`; config in `~/.claude/reap-orphans.conf`).
+- **This whole section is off inside a `/work` or `/backlog` stage.** Those stages run unattended
+  and then tear down, so there is nobody to read a PID and nothing to reap against. Their exec
+  prompts require every process to end before the stage returns, and their teardown sweeps for
+  orphans with `lib/stage-processes.sh`. Where that rule and this one disagree, the stage prompt
+  wins.
+- **`jobs -p` is not a cleanup mechanism.** Under a non-interactive `zsh -c` it returns nothing, so
+  `kill $(jobs -p)` ends nothing and the shell still prints whatever success message follows it.
+  On 2026-09-04 that idiom left twenty busy loops running for 3h26m at 601.8% CPU, with the load
+  average at 195.63. Capture each PID from `$!` on the line that starts the process.
 
 ## Monitors and health checks
 

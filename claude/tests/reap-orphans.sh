@@ -18,17 +18,46 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/reap.XXXXXX")
 ROOT="$WORK/fakeproj"; mkdir -p "$ROOT/bin"
 OUTSIDE="$WORK/elsewhere"; mkdir -p "$OUTSIDE/bin"
 
-SPAWNED=""
-cleanup() {
-  # `disown` first: killing a still-tracked background job makes the shell print a
-  # "Killed: 9" job-control line to stderr after the summary, which reads like a failure.
-  for p in $SPAWNED; do
-    disown "$p" 2>/dev/null || true
+# Every fixture this run spawns is recorded in a FILE, never a shell variable. `spawn_orphan` is
+# always called as `p=$(spawn_orphan ...)`, so anything it assigns to a variable lands in the
+# command-substitution subshell and never reaches this trap. SPAWNED read empty at exit, the
+# cleanup killed nothing, and two fixtures leaked on every run: 98 pairs had piled up, the oldest 39 days old. The `$WORK/.pid` handoff below already crosses that boundary
+# for the same reason.
+SPAWNED_FILE="$WORK/spawned"
+: > "$SPAWNED_FILE"
+
+# Kill every process this run started. The recorded PIDs are a convenience; the AUTHORITY is the
+# unique $WORK path, which every fixture carries in its argv. Sweeping by that path also catches a
+# fixture nobody remembered to record, which retires the bug class rather than one instance of it.
+# `pgrep` omits itself, and this shell is excluded explicitly.
+kill_fixtures() {
+  local p
+  if [ -f "$SPAWNED_FILE" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      # disown first: killing a still-tracked background job makes the shell print a
+      # "Killed: 9" job-control line to stderr after the summary, which reads like a failure.
+      disown "$p" 2>/dev/null || true
+      kill -KILL "$p" 2>/dev/null
+    done < "$SPAWNED_FILE"
+  fi
+  for p in $(pgrep -f "$WORK" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
     kill -KILL "$p" 2>/dev/null
   done
+}
+
+# Survivors of this run, excluding this shell. 0 is the only acceptable answer.
+surviving_fixtures() {
+  pgrep -f "$WORK" 2>/dev/null | grep -v "^$$\$" | wc -l | tr -d ' '
+}
+
+cleanup() {
+  kill_fixtures
   rm -rf "$WORK"
 }
-trap cleanup EXIT
+# INT and TERM as well as EXIT: an interrupted run must not leave fixtures behind either.
+trap cleanup EXIT INT TERM
 
 # Fixtures are SYMLINKS to a real system binary, invoked through the symlink path.
 #
@@ -55,7 +84,7 @@ ln -sf "$BLOCKER" "$OUTSIDE/bin/other-server"
 spawn_orphan() {
   local exe="$1"; shift
   ( "$exe" "$@" >/dev/null 2>&1 & echo $! > "$WORK/.pid" )
-  local p; p=$(cat "$WORK/.pid"); SPAWNED="$SPAWNED $p"; echo "$p"
+  local p; p=$(cat "$WORK/.pid"); printf '%s\n' "$p" >> "$SPAWNED_FILE"; echo "$p"
 }
 
 # Run the hook against our fake root only.
@@ -115,7 +144,7 @@ assert_not_contains "too-young orphan is not listed" "$out" "$p_young"
 
 section "Ignores a process with a LIVE parent, even under a root"
 "$ROOT/bin/fake-server" -f /dev/null >/dev/null 2>&1 &
-p_child=$!; SPAWNED="$SPAWNED $p_child"
+p_child=$!; printf '%s\n' "$p_child" >> "$SPAWNED_FILE"
 sleep 1
 assert_eq "parent is this shell, not init" "$$" "$(ps -p "$p_child" -o ppid= | tr -d ' ')"
 assert_not_contains "child of a live parent is not listed" "$(run)" "$p_child"
@@ -147,5 +176,13 @@ section "--quiet suppresses the dry-run listing"
 p3=$(spawn_orphan "$ROOT/bin/fake-server" -f /dev/null); sleep 1
 assert_eq "quiet dry run prints nothing" "" "$(run --quiet)"
 assert_eq "and still killed nothing"     "yes" "$(alive "$p3")"
+
+section "This suite leaves nothing behind"
+# The leak this section exists for was invisible for 39 days because nothing ever asked. Two
+# fixtures survive the tests above by design (the protected `claude` fixture, and the `--quiet` fixture that is only ever dry-run), so cleanup is
+# exercised here, inside the assertion count, rather than trusted to the EXIT trap.
+kill_fixtures
+sleep 1
+assert_eq "no fixture process survives the suite" "0" "$(surviving_fixtures)"
 
 summary

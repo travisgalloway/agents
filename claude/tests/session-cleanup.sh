@@ -21,12 +21,46 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/sesscleanup.XXXXXX")
 ROOT="$WORK/fakeproj"; mkdir -p "$ROOT/bin"
 NONREPO="$WORK/plain"; mkdir -p "$NONREPO"
 
-SPAWNED=""
+# Every fixture this run spawns is recorded in a FILE, never a shell variable. `spawn_orphan` is
+# always called as `p=$(spawn_orphan ...)`, so anything it assigns to a variable lands in the
+# command-substitution subshell and never reaches this trap. SPAWNED read empty at exit, the
+# cleanup killed nothing, and a fixture the hook under test did not kill would leak silently. Today the hook kills all three, so nothing escapes, but the trap has never been able to catch one that did. The `$WORK/.pid` handoff below already crosses that boundary
+# for the same reason.
+SPAWNED_FILE="$WORK/spawned"
+: > "$SPAWNED_FILE"
+
+# Kill every process this run started. The recorded PIDs are a convenience; the AUTHORITY is the
+# unique $WORK path, which every fixture carries in its argv. Sweeping by that path also catches a
+# fixture nobody remembered to record, which retires the bug class rather than one instance of it.
+# `pgrep` omits itself, and this shell is excluded explicitly.
+kill_fixtures() {
+  local p
+  if [ -f "$SPAWNED_FILE" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      # disown first: killing a still-tracked background job makes the shell print a
+      # "Killed: 9" job-control line to stderr after the summary, which reads like a failure.
+      disown "$p" 2>/dev/null || true
+      kill -KILL "$p" 2>/dev/null
+    done < "$SPAWNED_FILE"
+  fi
+  for p in $(pgrep -f "$WORK" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
+    kill -KILL "$p" 2>/dev/null
+  done
+}
+
+# Survivors of this run, excluding this shell. 0 is the only acceptable answer.
+surviving_fixtures() {
+  pgrep -f "$WORK" 2>/dev/null | grep -v "^$$\$" | wc -l | tr -d ' '
+}
+
 cleanup() {
-  for p in $SPAWNED; do disown "$p" 2>/dev/null || true; kill -KILL "$p" 2>/dev/null; done
+  kill_fixtures
   rm -rf "$WORK"
 }
-trap cleanup EXIT
+# INT and TERM as well as EXIT: an interrupted run must not leave fixtures behind either.
+trap cleanup EXIT INT TERM
 
 export GIT_CONFIG_GLOBAL="$WORK/gitconfig" GIT_CONFIG_SYSTEM=/dev/null
 git config --global user.email t@example.com; git config --global user.name Test
@@ -44,7 +78,7 @@ ln -sf /usr/bin/tail "$ROOT/bin/fake-server"
 
 spawn_orphan() {
   ( "$ROOT/bin/fake-server" -f /dev/null >/dev/null 2>&1 & echo $! > "$WORK/.pid" )
-  local p; p=$(cat "$WORK/.pid"); SPAWNED="$SPAWNED $p"; echo "$p"
+  local p; p=$(cat "$WORK/.pid"); printf '%s\n' "$p" >> "$SPAWNED_FILE"; echo "$p"
 }
 
 # run <cwd> <session_id> — feed the synthetic SessionEnd payload, scoped to our fake root.
@@ -137,5 +171,13 @@ rm -f "$HOME/.claude/run/bg-tasks-$THEIRS.json"
 section "Silent when there is nothing to do"
 rm -rf "$REPO/.claude-work"; git -C "$REPO" worktree prune 2>/dev/null
 assert_eq "no output" "" "$(run "$REPO" "$MINE")"
+
+section "This suite leaves nothing behind"
+# The leak this section exists for was invisible for 39 days because nothing ever asked. Two
+# fixtures survive the tests above by design (none today, since the hook under test kills all three), so cleanup is
+# exercised here, inside the assertion count, rather than trusted to the EXIT trap.
+kill_fixtures
+sleep 1
+assert_eq "no fixture process survives the suite" "0" "$(surviving_fixtures)"
 
 summary

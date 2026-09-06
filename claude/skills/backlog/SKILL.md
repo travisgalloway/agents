@@ -20,7 +20,7 @@ argument-hint: "[#N|#A-B|milestone=\"…\"|label=…] [-label=…] [include=epic
 # start on its own initiative. Nothing else in the suite invokes /backlog, so denying model
 # invocation costs no handoff.
 disable-model-invocation: true
-allowed-tools: Bash(__CLAUDE_HOME__/lib/branches.sh), Bash(bash __CLAUDE_HOME__/lib/backlog-preflight.sh:*), Bash(bash __CLAUDE_HOME__/lib/backlog-teardown.sh:*)
+allowed-tools: Bash(__CLAUDE_HOME__/lib/branches.sh), Bash(bash __CLAUDE_HOME__/lib/backlog-preflight.sh:*), Bash(bash __CLAUDE_HOME__/lib/backlog-teardown.sh:*), Bash(bash __CLAUDE_HOME__/lib/stage-processes.sh:*)
 ---
 
 Repo context, pre-resolved (see `~/.claude/lib/branches.sh`; empty values mean unresolved —
@@ -425,7 +425,7 @@ to the subagent in minutes or hours, e.g. `Budget: 90 minutes`.
 `{comma_separated_parents}` is `{parents}["{n}"]` from Step 4, joined with commas — omit the
 `--parents` flag entirely when an issue has none.
 
-### 6a. Preflight, sweep, sentinel
+### 6a. Preflight, sweep, snapshot, sentinel
 
 ```bash
 bash __CLAUDE_HOME__/lib/backlog-preflight.sh {n} \
@@ -460,6 +460,17 @@ Then the **ledger sweep**: `TaskStop` any monitor or teammate whose task ID appe
 for an issue already terminal. Run this at *every* preflight, not only at the end — after
 a compaction the only record of those IDs is the ledger, and an orphaned 60-second poller emits into
 the very context that just compacted.
+
+Then take the **process snapshot** the teardown sweep compares against:
+
+```bash
+bash __CLAUDE_HOME__/lib/stage-processes.sh snapshot {n}
+```
+
+`backlog-teardown.sh` step 3 sweeps the processes a stage orphaned, and it identifies them by two
+conditions together: absent from this snapshot, and reparented to PID 1. Without the snapshot the
+sweep exits 5 and reports **blind**, because it cannot tell the stage's processes from the ones you
+were already running. Blind is not clean, and teardown returns 3 rather than reporting success.
 
 Then write the sentinel — **once per stage, never hand-edited in place**:
 
@@ -651,10 +662,17 @@ Record `head_before` (`git -C "{tree}" rev-parse "{branch}"`) in the ledger, the
 >
 > - **Before your first commit, assert `git symbolic-ref --short HEAD` reads `"{branch}"`.** If it
 >   reads `{integration_branch}`, stop and report a blocker — do not commit.
-> - **Do not `disown` anything.** Your standing rules permit detaching long commands; at
->   `{parallel}=1` this tree is shared with every other issue in the queue, and a disowned process
->   outlives teardown and keeps writing into the tree the next issue is editing. Use foreground
->   calls with `timeout: 600000`, or report a blocker.
+> - **Every process you start must end before you return.** Do not use `&`, `nohup`, or `disown`.
+>   Your standing rules permit detaching long commands; two things here override that. At
+>   `{parallel}=1` this tree is shared with every other issue in the queue, and a detached process
+>   outlives teardown and keeps writing into the tree the next issue is editing. Separately, any
+>   process left behind keeps burning CPU for the rest of the session. Use foreground calls with
+>   `timeout: 600000`, or report a blocker. If a background process is genuinely unavoidable,
+>   capture its PID from `$!` on the same line that starts it, and end it by that PID.
+> - **Never build that cleanup on `jobs -p`.** Under a non-interactive `zsh -c` it returns nothing,
+>   so `kill $(jobs -p)` ends nothing and the shell still prints whatever success message follows
+>   it. One stage shipped exactly that and left twenty busy loops running for 3h26m at 601.8% CPU,
+>   with the load average at 195.63. Teardown now sweeps for orphans and will report yours.
 >
 > Read the plan at `{plan_file}` and implement it. Commit at natural stopping points per `/commit`
 > conventions, referencing `#{n}`. Keep the issue in sync — checkbox toggles (match on task text,
@@ -680,7 +698,8 @@ Record `head_before` (`git -C "{tree}" rev-parse "{branch}"`) in the ledger, the
 >
 > Budget: {exec_cap}. Report a blocker rather than wait past it.
 >
-> Report back concisely: PR number, status, blocker reason. One line, no narrative.
+> Report back concisely: PR number, status, blocker reason, and `procs=N` — how many background
+> processes you started and ended. `procs=0` is the expected answer. One line, no narrative.
 
 **Then compare `head_after` against `head_before`.** The synchronous result tells you the stage
 *returned*; it does not tell you it *did anything*. An unchanged SHA with a clean
@@ -798,8 +817,11 @@ Then, **on every exit path — success, blocker, cap breach, error, abandonment*
    **Always pass `--branch`.** That block runs `git branch -D`, which is irreversible, and you
    already own the exact name. Without the flag teardown falls back to scanning for branches
    whose name merely *looks like* it belongs to issue `{n}` — a guess, on a delete path.
-   rc 3 means a branch or worktree was deliberately left in place because it holds unmerged work —
-   name it in the final summary and resolve it by hand.
+   rc 3 means something was deliberately left in place: a branch or worktree holding unmerged
+   work, an orphaned process outside the stage's tree, or a process sweep that could not observe.
+   Name it in the final summary and resolve it by hand. A sweep that reports **BLIND** means no
+   snapshot was taken in §6a, so orphaned processes cannot be ruled out — record that as the
+   blocker rather than reporting the stage torn down.
 3. Append the terminal ledger line.
 4. If blocked or skipped, apply the `blocked` label (only if one already exists) and comment the
    cause on the issue.

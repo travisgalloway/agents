@@ -33,6 +33,16 @@ cd "$(dirname "$0")" || exit 1
 
 PREFLIGHT="$HOME/.claude/lib/backlog-preflight.sh"
 TEARDOWN="$HOME/.claude/lib/backlog-teardown.sh"
+
+# Teardown step 3 sweeps the processes a stage orphaned, and reports BLIND (rc 3) when no snapshot
+# was taken before dispatch — see skills/backlog §6a. These assertions call teardown directly, so
+# they take the snapshot the orchestrator would, into a scratch CLAUDE_HOME so the real
+# ~/.claude/run is never written. `snap` is called before EVERY teardown invocation: a clean sweep
+# consumes its snapshot, so a second teardown on the same issue needs a second one.
+export CLAUDE_HOME="${TMPDIR:-/tmp}/backlog-guards-claude-home.$$"
+mkdir -p "$CLAUDE_HOME"
+trap 'rm -rf "$CLAUDE_HOME"' EXIT
+snap() { bash "$HOME/.claude/lib/stage-processes.sh" snapshot "$1" >/dev/null 2>&1 || true; }
 for f in "$PREFLIGHT" "$TEARDOWN"; do
   [ -f "$f" ] || { bad "script not found at $f"; summary; exit 1; }
 done
@@ -163,6 +173,7 @@ R=$(fresh_repo tdbranch)
 git -C "$R" branch fix/12-target
 git -C "$R" branch travis/12-notes
 git -C "$R" branch 'feat(api)/12-other'
+snap 12
 out=$(cd "$R" && bash "$TEARDOWN" 12 --merged --branch fix/12-target --root "$R" --integration main 2>&1)
 assert_eq "the named branch is gone" "" \
   "$(git -C "$R" for-each-ref --format='%(refname:short)' refs/heads/fix/12-target)"
@@ -176,6 +187,7 @@ R=$(fresh_repo tdstrict)
 # the grammar does not recognize.
 git -C "$R" branch fix/12-legacyfallback
 git -C "$R" branch travis/12-notes
+snap 12
 out=$(cd "$R" && bash "$TEARDOWN" 12 --merged --root "$R" --integration main 2>&1)
 assert_eq "the fallback deletes a recognized branch" "" \
   "$(git -C "$R" for-each-ref --format='%(refname:short)' refs/heads/fix/12-legacyfallback)"
@@ -184,6 +196,7 @@ assert_eq "the fallback never deletes an unrecognized one" "travis/12-notes" \
 
 R=$(fresh_repo tdnomerge)
 git -C "$R" branch fix/12-unmerged
+snap 12
 out=$(cd "$R" && bash "$TEARDOWN" 12 --branch fix/12-unmerged --root "$R" --integration main 2>&1)
 assert_eq "without --merged nothing is deleted at all" "fix/12-unmerged" \
   "$(git -C "$R" for-each-ref --format='%(refname:short)' refs/heads/fix/12-unmerged)"
@@ -250,11 +263,13 @@ printf '{"issue": 5, "session": "session-under-test"}\n' > "$R/.claude/work-acti
 : > "$R/.claude/work-active-5.progress"
 printf '{"pr": 42}\n' > "$R/.claude/automerge-active-42"
 : > "$R/.claude/automerge-active-42.progress"
+snap 5
 assert_eq "teardown succeeds" "0" "$(cd "$R" && rc_of bash "$TEARDOWN" 5 --pr 42 --root "$R")"
 assert_eq "no work-active-5 artifacts survive" "0" \
   "$(ls "$R"/.claude/work-active-5* 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "no automerge-active-42 artifacts survive" "0" \
   "$(ls "$R"/.claude/automerge-active-42* 2>/dev/null | wc -l | tr -d ' ')"
+snap 5
 assert_eq "teardown on an already-clean issue is still success" "0" \
   "$(cd "$R" && rc_of bash "$TEARDOWN" 5 --pr 42 --root "$R")"
 
@@ -265,6 +280,7 @@ git -C "$R" checkout -q -b feature/9-done
 echo work > "$R/w.txt"; git -C "$R" add -A; git -C "$R" commit -qm "work (#9)"
 git -C "$R" checkout -q main
 
+snap 9
 assert_eq "without --merged the branch is untouched" "0" \
   "$(cd "$R" && rc_of bash "$TEARDOWN" 9 --root "$R")"
 assert_eq "feature/9-done still present" "feature/9-done" \
@@ -273,6 +289,7 @@ assert_eq "feature/9-done still present" "feature/9-done" \
 # THE REGRESSION: standing on the branch is exactly the state after an exec stage, and
 # `git branch -D` refuses to delete the branch HEAD points at.
 git -C "$R" checkout -q feature/9-done
+snap 9
 assert_eq "with --merged, teardown succeeds even while standing on the branch" "0" \
   "$(cd "$R" && rc_of bash "$TEARDOWN" 9 --merged --integration main --root "$R")"
 assert_eq "the branch is gone" "" \
@@ -286,9 +303,11 @@ R=$(fresh_repo t3)
 WT="$R/.claude-work/session-under-test/issue-3"
 git -C "$R" worktree add -q -b feature/3-wip "$WT" 2>/dev/null
 echo "unsaved" > "$WT/unsaved.txt"
+snap 3
 RC=$(cd "$R" && rc_of bash "$TEARDOWN" 3 --root "$R" --worktree "$WT")
 assert_eq "rc 3 signals the worktree was left in place" "3" "$RC"
 assert_eq "the uncommitted file survives" "unsaved" "$(cat "$WT/unsaved.txt" 2>/dev/null)"
+snap 3
 assert_contains "and the path is named so it can be resolved by hand" \
   "$(cd "$R" && bash "$TEARDOWN" 3 --root "$R" --worktree "$WT" 2>&1)" "WORKTREE NOT RELEASED"
 
@@ -296,6 +315,7 @@ section "Teardown: a clean worktree IS released"
 R=$(fresh_repo t4)
 WT="$R/.claude-work/session-under-test/issue-4"
 git -C "$R" worktree add -q -b feature/4-clean "$WT" 2>/dev/null
+snap 4
 assert_eq "clean worktree releases cleanly" "0" \
   "$(cd "$R" && rc_of bash "$TEARDOWN" 4 --root "$R" --worktree "$WT")"
 assert_eq "only the main tree remains" "1" \
@@ -362,6 +382,7 @@ assert_eq "preflight with a non-numeric issue" "64" "$(cd "$R" && rc_of bash "$P
 assert_eq "preflight with an unknown option" "64" \
   "$(cd "$R" && rc_of bash "$PREFLIGHT" 1 --nope)"
 assert_eq "teardown with no issue number" "64" "$(cd "$R" && rc_of bash "$TEARDOWN")"
+snap 1
 assert_eq "teardown with an unknown option" "64" \
   "$(cd "$R" && rc_of bash "$TEARDOWN" 1 --nope)"
 

@@ -79,6 +79,25 @@ second is exactly how a teardown reports clean while work continues.
 snapshot, sentinels whose recorded session matches, its monitor, and worktrees that are
 clean. It never forces a removal, and it never touches a plan file.
 
+Agents and monitors are only two thirds of the answer. A stage also starts operating-system
+processes, and those outlive it. On 2026-09-04 a stage backgrounded twenty subshells and
+cleaned up with the shell's own job list, which returns nothing in a non-interactive shell.
+The cleanup ended nothing, printed success, and the subshells reparented to the init process
+and ran for three and a half hours at 601.8 percent processor use.
+
+`lib/stage-processes.sh` closes that gap with the same shape the rest of the suite uses.
+It records the process table before a stage is dispatched, and sweeps afterward. Two
+conditions together identify a stage orphan, never one alone: the process is absent from
+the snapshot, and its parent is the init process. A stage runs for up to 90 minutes while
+the operator keeps working, so newness on its own would sweep up unrelated jobs. Among
+those orphans, only the ones whose working directory sits inside the stage's tree are
+ended. Everything else is printed and left alone.
+
+A missing or unreadable snapshot exits blind rather than reporting a clean sweep. The
+backlog teardown calls the sweep before releasing the worktree, because a process still
+holding a working directory inside it makes the removal fail, and the failure then reads
+as uncommitted work.
+
 ## Orphaned processes
 
 Development servers survive the sessions that started them. `reap-orphans.sh` runs at
@@ -89,9 +108,11 @@ overridable by an environment variable, which is how the test suite drives it.
 
 ## Why the tests exist
 
-Nineteen files and roughly 620 assertions guard a personal configuration, which needs
-justifying. Each suite exists because a specific bug shipped and was expensive to find.
-Four examples show the pattern.
+Twenty test files guard a personal configuration, which needs justifying. Each suite
+exists because a specific bug shipped and was expensive to find. The suite prints its own
+assertion total when it runs, and no document here restates that number, because a
+restated count is wrong on the next commit and nothing notices. Five examples show the
+pattern.
 
 **The shell is zsh, not bash.** Claude Code's Bash tool runs the login shell. A fence
 labeled `bash` in a skill is zsh input. The automerge skill once compared timestamps with
@@ -112,3 +133,8 @@ field, a failed call, and an undocumented value are all refusals.
 branches broadly, because a missed stale branch costs a duplicate branch and a run that
 reports clean. The teardown deletes, so it takes the exact branch name it was given, and
 a same-issue branch nobody told it about must survive.
+
+**A cleanup that ends nothing still prints success.** The shell's job list is empty in a
+non-interactive shell, so the idiom that reads as tearing down background work is a no-op
+there, and the message after it runs anyway. `stage-processes.sh` pins that behavior
+directly, so the rule in both exec prompts fails here first if the shell ever changes.

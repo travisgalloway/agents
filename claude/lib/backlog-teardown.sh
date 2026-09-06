@@ -13,7 +13,9 @@
 #
 # CONTRACT: act on the exit code.
 #   0   teardown complete (nothing left to remove is also success)
-#   3   the branch could not be deleted — real work may be unmerged; left alone deliberately
+#   3   something was left behind that needs a person: a branch that could not be deleted, a
+#       worktree holding uncommitted work, an orphaned process outside the tree, or a process
+#       sweep that could not observe. Never "mostly fine".
 #   64  usage error
 #
 # Output is one line per action taken, for the ledger and the transcript.
@@ -96,7 +98,30 @@ if [ -n "$pr" ]; then
   fi
 fi
 
-# --- 3. release the per-issue worktree ---------------------------------------------
+# --- 3. end the processes this stage orphaned --------------------------------------
+# BEFORE the worktree release below, deliberately. A process still holding a cwd inside the
+# worktree makes `git worktree remove` fail, and the release would then report uncommitted-work
+# contention that is really a leaked process, sending you to look in the wrong place.
+#
+# At {parallel}=1 there is no per-issue worktree, so the stage's tree is the repo root.
+sweep_tree="$worktree"
+[ -n "$sweep_tree" ] || sweep_tree="$root"
+if [ -n "$_lib_dir" ] && [ -x "$_lib_dir/stage-processes.sh" ]; then
+  sweep_out=$("$_lib_dir/stage-processes.sh" sweep "$issue" --tree "$sweep_tree" 2>&1)
+  sweep_rc=$?
+  [ -n "$sweep_out" ] && printf '%s\n' "$sweep_out"
+  case "$sweep_rc" in
+    0) ;;
+    5) say "PROCESS SWEEP BLIND for #$issue — orphaned processes cannot be ruled out. Was 'stage-processes.sh snapshot $issue' run before dispatch?"
+       rc=3 ;;
+    *) rc=3 ;;
+  esac
+else
+  say "PROCESS SWEEP SKIPPED: no executable stage-processes.sh beside this script — orphans cannot be ruled out"
+  rc=3
+fi
+
+# --- 4. release the per-issue worktree ---------------------------------------------
 # NEVER --force. A non-zero exit means uncommitted work in that tree: leave it, name the path, and
 # let the summary carry it. An abandoned worktree is recoverable; destroyed work is not.
 if [ -n "$worktree" ] && [ -d "$worktree" ]; then
@@ -109,7 +134,7 @@ if [ -n "$worktree" ] && [ -d "$worktree" ]; then
   fi
 fi
 
-# --- 4. delete the local branch, but only after a VERIFIED merge --------------------
+# --- 5. delete the local branch, but only after a VERIFIED merge --------------------
 # `gh pr merge --delete-branch` deletes the remote branch but refuses to delete a local one the
 # tree is standing on — which is how stale local branches outlive their own merges. Returning to
 # the base branch first is what makes the delete possible at all.
