@@ -16,6 +16,28 @@ Claude Code is populated. Gemini and Antigravity are reserved.
 Start with [docs/claude-catalog.md](docs/claude-catalog.md) for a file-by-file listing,
 and [docs/claude-workflow.md](docs/claude-workflow.md) for how the pipeline fits together.
 
+## Read this before you install
+
+These are one person's settings, and three of the choices in them weaken defaults that
+exist for good reason. Installing replaces your `~/.claude/settings.json`, so read it
+first and decide for yourself.
+
+**Two permission prompts are switched off.** `skipDangerousModePermissionPrompt` and
+`skipAutoPermissionPrompt` remove the confirmations in front of the mode that skips
+permission checks. Delete both keys if you want those prompts back.
+
+**The allowlist is broader than it looks.** It reads as six narrow entries, but
+`Bash(xargs:*)` runs any program named in its own arguments, and `Bash(git:*)` covers
+`git -c core.pager=...` and a force push. Together they approach unrestricted execution
+without a prompt. Four subagent definitions also declare `permissionMode: bypassPermissions`,
+which is deliberate for unattended runs and worth understanding before you use them.
+
+**A linked install makes the clone live code.** Under the default mode, hooks and libraries
+in `~/.claude` are symlinks into this working copy, and `settings.json` runs four of them
+automatically at session start, session end, and on every stop. Pulling a change here
+deploys it to the next session with no review step. Treat `git pull` as a deploy, or install
+with `--copy` instead.
+
 ## Installing on a new machine
 
 ```bash
