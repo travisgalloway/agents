@@ -1,0 +1,11 @@
+# Plugins installed from the official marketplace, anthropics/claude-plugins-official.
+# `install/claude.sh plugins` turns this list into the commands that install them.
+# Nothing here is vendored: the marketplace holds the code, this file holds the choice.
+frontend-design@claude-plugins-official
+feature-dev@claude-plugins-official
+security-guidance@claude-plugins-official
+playwright@claude-plugins-official
+typescript-lsp@claude-plugins-official
+code-simplifier@claude-plugins-official
+rust-analyzer-lsp@claude-plugins-official
+swift-lsp@claude-plugins-official

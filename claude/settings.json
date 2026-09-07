@@ -1,0 +1,133 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(xargs:*)",
+      "Bash(cat:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(pnpm:*)",
+      "WebSearch",
+      "WebFetch"
+    ]
+  },
+  "model": "claude-fable-5-1[1m]",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/bg-snapshot.sh",
+            "statusMessage": "Recording in-flight background work"
+          },
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/automerge-rewake.sh",
+            "statusMessage": "Checking for an active bounded wait",
+            "asyncRewake": true,
+            "rewakeSummary": "A /work or merge wait looks unwatched — nudging"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/automerge-rewake.sh",
+            "statusMessage": "Checking for an active bounded wait",
+            "asyncRewake": true,
+            "rewakeSummary": "A /work or merge wait looks unwatched — nudging"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/automerge-rewake.sh",
+            "timeout": 20,
+            "statusMessage": "Checking for an active bounded wait",
+            "asyncRewake": true,
+            "rewakeSummary": "A /work or merge wait looks unwatched — nudging"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "work-exec|work-exec-opus",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/automerge-rewake.sh",
+            "timeout": 20,
+            "statusMessage": "Checking for an unfinished merge"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/reap-orphans.sh --kill",
+            "timeout": 15,
+            "statusMessage": "Sweeping orphaned dev-server processes"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_HOME__/hooks/session-cleanup.sh",
+            "timeout": 15,
+            "statusMessage": "Releasing this session's /work resources"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash __CLAUDE_HOME__/statusline-command.sh",
+    "refreshInterval": 30
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "swift-lsp@claude-plugins-official": true
+  },
+  "outputStyle": "Concise",
+  "alwaysThinkingEnabled": true,
+  "effortLevel": "high",
+  "modelSettings": {
+    "claude-fable-5-1": {
+      "effortLevel": "xhigh"
+    }
+  },
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "teammateMode": "in-process",
+  "agentPushNotifEnabled": true,
+  "skipAutoPermissionPrompt": true
+}
