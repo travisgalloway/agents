@@ -10,6 +10,9 @@
 # not shell commands, so they stay in the skill body — and they must be stopped by the task IDs
 # recorded in the ledger, never from memory, because after a compaction the memory is gone and a
 # persistent:true Monitor polls `git log` + `gh pr list` every 60s until the session ends.
+# A teammate that has already RETURNED still needs TaskStop: the harness keeps a finished
+# subagent registered (ListAgents shows it `completed`) until it is stopped, so the clean-return
+# path is not exempt. Skipping it there left 41 agents behind on a 20-issue /backlog run.
 #
 # CONTRACT: act on the exit code.
 #   0   teardown complete (nothing left to remove is also success)

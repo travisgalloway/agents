@@ -296,7 +296,12 @@ released keeps running for the rest of the session. In order:
 
 1. **`TaskStop` the stage's `Monitor`.** It is `persistent: true` — unstopped, it polls `git log` and
    `gh pr list` every 60s against a branch nobody is working on, until the session ends.
-2. **`TaskStop` the teammate**, unless it already exited cleanly on its own.
+2. **`TaskStop` the teammate**, including one that already returned its result. A returned
+   subagent stays registered with the harness (`ListAgents` shows it as `completed`) until it is
+   stopped, and a run that skips this on every clean return ends with one leaked agent per stage —
+   41 of them on a 20-issue `/backlog` run. Record the reply as `stopped`, `already-gone`
+   (a `No task found` reply — the harness had released it) or `failed`; only `failed` blocks
+   teardown, and it is reported as a blocker.
 3. **`rm -f` the sentinel and its side files**: `rm -f .claude/work-active-{n}{,.rewakes,.capped,.progress}`.
    All three, every time — `.progress` carries the last observed progress fingerprint, and one left
    behind is inherited by the next run on that issue as if it were a fresh sample.
@@ -1070,8 +1075,10 @@ check that it did, because the run ends here and anything still alive stays aliv
 session:
 
 1. **`ListAgents` and `~/.claude/run/bg-tasks-$CLAUDE_CODE_SESSION_ID.json`** — `TaskStop` any
-   `/work` subagent, monitor or teammate still live for an issue in `{queue}`, and say so; a
+   `/work` subagent, monitor or teammate still listed for an issue in `{queue}`, and say so; a
    survivor means a teardown path was missed and is worth reporting rather than quietly fixing.
+   A row marked `completed` counts: a returned subagent stays listed until it is stopped. Pass
+   the row's ID column to `TaskStop`; a `No task found` reply means it was already released.
    Peer-session rows in `ListAgents` belong to other sessions — never stop those. **An empty
    reading is not an assertion that nothing is live**: monitors and teammates are in-process, so
    nothing in `ps` corroborates it, and a missing or `absent` snapshot means the question went

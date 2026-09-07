@@ -50,6 +50,9 @@ kind.
 
 - **Only this session's own subagents are `TaskStop` candidates.** A peer session belongs to
   someone else's run; never stop one. Count them in the report and move on.
+- **Pass the row's first column, the ID, to `TaskStop`.** The bare name (`plan-459`) also works,
+  so a name-only row is not a reason to skip. A row whose status reads `completed` is still a
+  candidate: a returned subagent stays listed until it is stopped.
 - It does **not** list Monitors or backgrounded shells. That is View B's job.
 
 **View B — the background-work snapshot.**
@@ -83,6 +86,10 @@ failure mode `/work`'s teardown discipline exists to prevent.
 - Note each one's kind for the summary: subagent, monitor, teammate, or background bash.
 - **A `TaskStop` that fails is reported as not stopped.** Never fold a failure into the stopped
   count — that is the same lie as reporting an unobserved session as clean.
+- **A `No task found with ID: …` reply is a third outcome, "already gone".** The harness had
+  released that agent before `/reap` ran (the `/clear` stop, or a stage's own teardown), and the
+  roster row was stale. Count it apart from both stopped and not stopped, then re-run `ListAgents`:
+  any own-subagent row still present after its `TaskStop` is reported as not stopped.
 
 ## Step 3: Release session state and orphaned processes
 
@@ -134,6 +141,7 @@ Say out loud what disagreed. Each pairing means something specific:
 Reaped
 
   Stopped           4  (2 subagents, 1 monitor, 1 background bash)
+  Already gone     31  (No task found — released before /reap ran)
   Not stopped       1  (TaskStop failed: work-exec-7 — press Esc)
   Peer sessions     18 left alone (not this session's to stop)
   Processes reaped  51 (~1020 threads)

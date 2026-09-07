@@ -7,7 +7,7 @@ Claude Code is populated. Gemini and Antigravity are reserved.
 
 | Path | Holds |
 |---|---|
-| `claude/` | A mirror of the shareable part of `~/.claude`. Sixty-one files, no repository metadata mixed in. |
+| `claude/` | A mirror of the shareable part of `~/.claude`. Sixty-two files, no repository metadata mixed in. |
 | `install/claude.sh` | Installs that mirror into `~/.claude`, and pulls edits back out again. |
 | `install/claude-plugins.txt` | The eight marketplace plugins to re-install. No plugin code is vendored. |
 | `docs/` | What every tracked file does, how the parts work together, and what was deliberately left out. |

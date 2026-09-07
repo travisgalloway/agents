@@ -4,7 +4,7 @@ Every file this repository installs into `~/.claude`, with one line saying what 
 The tables follow the directory layout under `claude/`. For how the parts work together,
 read [claude-workflow.md](claude-workflow.md).
 
-Sixty-one files are tracked. Thirteen of them carry the `__CLAUDE_HOME__` token and are
+Sixty-two files are tracked. Thirteen of them carry the `__CLAUDE_HOME__` token and are
 rendered at install time rather than symlinked, because Claude Code needs a literal
 absolute path in those positions.
 
@@ -79,18 +79,19 @@ Twelve skills, 17 files. The vendored Cloudflare skills are not tracked here; se
 
 ## `tests/` — regression suites
 
-Twenty files. Run them with `bash ~/.claude/tests/run-all.sh`. No suite touches the
+Twenty-one files. Run them with `bash ~/.claude/tests/run-all.sh`. No suite touches the
 network, every GitHub call is served by a stub on the path, and git scenarios build
 throwaway repositories under the temporary directory. Each suite exports its own git
 configuration first, so the real git identity is never written.
 
 | File | What it pins |
 |---|---|
-| `run-all.sh` | Runs all 17 suites in a fixed order and sums their assertion tallies. An unparseable tally reports as unknown rather than zero. |
+| `run-all.sh` | Runs all 18 suites in a fixed order and sums their assertion tallies. An unparseable tally reports as unknown rather than zero. |
 | `lib.sh` | Shared assertion helpers, plus block extraction and the shell those blocks run under. |
 | `README.md` | Documents every suite, and explains why extracted blocks run under zsh. |
 | `lint-frontmatter.sh` | Only documented frontmatter keys appear in skills and agents. Catches the kebab-case and camel-case spelling mixup that silently disables enforcement. |
 | `jq-run-lookup.sh` | The workflow-run lookup shared by `automerge` and the rewake hook. A null field must not abort the query. |
+| `ledger-sweep.sh` | The query that pairs an armed stage with its teardown. A stage armed and never torn down is a leak, and a malformed ledger line is reported rather than skipped. |
 | `git-scenarios.sh` | Post-merge branch classification. Proves a three-dot diff cannot detect a squash merge and a two-dot diff can. |
 | `hook-sentinels.sh` | Ownership is checked before expiry, so another session's sentinel survives even past its cap. |
 | `branches.sh` | The `branches.sh` contract and the branch grammar, including three traps that a well-meaning rewrite would break. |

@@ -68,6 +68,7 @@ liveness question:
 | Live work | Where it is visible |
 |---|---|
 | subagents this session spawned | `ListAgents` (peer-session rows are other sessions' — never stop those) |
+| a subagent that already returned | still in `ListAgents`, marked `completed`, until `TaskStop` — pass the ID column; a `No task found` reply means it is already released |
 | monitors, teammates, background shells | the `Stop` payload's `background_tasks`, persisted by `hooks/bg-snapshot.sh` to `~/.claude/run/bg-tasks-<session>.json`; or the task IDs recorded in the ledger at arm time |
 | detached `nohup … & disown` processes | `ps`; they survive `TaskStop` entirely |
 

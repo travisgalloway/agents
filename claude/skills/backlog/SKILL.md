@@ -353,17 +353,30 @@ resume can restate the run it is resuming rather than re-deriving a scope from a
 One line per transition:
 
 ```json
-{"t":"stage","issue":9,"stage":"plan","event":"dispatch","branch":"feat/9-…","plan_file":"…","epoch":1754,"monitor":"<task-id>","teammate":"<task-id>"}
+{"t":"stage","issue":9,"stage":"plan","event":"dispatch","branch":"feat/9-…","plan_file":"…","epoch":1754}
+{"t":"stage","issue":9,"stage":"plan","event":"armed","name":"plan-9","monitor":"<task-id>","teammate":"<agentId>"}
 {"t":"stage","issue":9,"stage":"plan","event":"done","plan_mtime":1754}
-{"t":"stage","issue":9,"stage":"exec","event":"dispatch","head_before":"abc123","monitor":"<task-id>","teammate":"<task-id>"}
+{"t":"stage","issue":9,"stage":"plan","event":"teardown","monitor":"stopped","teammate":"already-gone","rc":0}
+{"t":"stage","issue":9,"stage":"exec","event":"dispatch","head_before":"abc123"}
+{"t":"stage","issue":9,"stage":"exec","event":"armed","name":"exec-9","monitor":"<task-id>","teammate":"<agentId>"}
 {"t":"stage","issue":9,"stage":"exec","event":"done","pr":81,"head_after":"def456"}
+{"t":"stage","issue":9,"stage":"exec","event":"teardown","monitor":"stopped","teammate":"stopped","rc":0}
 {"t":"merge","issue":9,"pr":81,"event":"queued"}
 {"t":"merge","issue":9,"pr":81,"event":"gate","rc":1,"reason":"BEHIND"}
-{"t":"stage","issue":9,"stage":"merge","event":"dispatch","pr":81,"teammate":"<task-id>"}
+{"t":"stage","issue":9,"stage":"merge","event":"dispatch","pr":81}
+{"t":"stage","issue":9,"stage":"merge","event":"armed","name":"merge-9","teammate":"<agentId>"}
 {"t":"verify","issue":9,"pr":81,"gh_state":"MERGED"}
+{"t":"stage","issue":9,"stage":"merge","event":"teardown","teammate":"stopped","rc":0}
 {"t":"merge","issue":9,"pr":81,"event":"released"}
 {"t":"issue","issue":9,"event":"complete","result":"merged","pr":81,"url":"…"}
 ```
+
+**`event` is the only transition key on a `t:"stage"` line.** Step 8 and Step 9 select on `.event`,
+so a stage recorded under any other key is invisible to the resume and to the sweep. The
+resume of a long /backlog run wrote `"status":"dispatched"` for its last 30 dispatches, and
+none of them were swept. The `armed` line is written **after** the `Agent` call returns, because
+that is when the `agentId` exists; `dispatch` is written before, and never carries an ID. Every
+`armed` line must be closed by a `teardown` line, and Step 9 treats an unclosed one as a leak.
 
 **The `t:"merge"` lines are the merge slot**, and they exist because the slot is run state that must
 survive a compaction. `queued` when the PR enters the queue, `gate` with the `merge-gate.sh` exit
@@ -532,7 +545,8 @@ partway through a normal stage and leave the rest of it unwatched, which is the 
 failure wearing a monitor's clothes. Give it the description `issue #{n} {stage}: progress + stalls`,
 carrying
 `claude-work-monitor:${CLAUDE_CODE_SESSION_ID}:#{n}` in argv so `SessionEnd` cleanup can find it.
-**Record its task ID in the ledger immediately** — that is what `TaskStop` needs after a compaction.
+Keep its task ID for the `armed` line (§6c / §6d), which is written once the teammate's `agentId` is
+also known — that pair is what `TaskStop` needs at teardown and after a compaction.
 
 ```bash
 # Poll every 60s; emit ONLY on change. Every emitted line is a message in the orchestrator's
@@ -581,8 +595,11 @@ say that you did. An `absent` snapshot answers nothing — re-arm rather than as
 
 ### 6c. Plan stage
 
-Record `epoch` (`date +%s`) in the ledger **before** dispatching. Then `Agent`,
-`subagent_type: "work-plan"`.
+Record `epoch` (`date +%s`) in the ledger **before** dispatching. Then `Agent` with
+`subagent_type: "work-plan"`, `name: "plan-{n}"` and `run_in_background: true`. The call returns
+at once with an `agentId`; that string is the teammate's task ID. Append the `armed` line now,
+carrying the Monitor's task ID from §6b and this `agentId`. A dispatch with no `armed` line is one
+§6g cannot tear down by ID and Step 9 cannot find.
 
 Do **not** pass the Agent tool's `mode:` — deprecated and silently ignored, and a subagent otherwise
 inherits the session's permission mode, which is how an "autonomous" stage ends up blocked forever
@@ -652,8 +669,10 @@ for the longest.
 
 ### 6d. Exec stage
 
-Record `head_before` (`git -C "{tree}" rev-parse "{branch}"`) in the ledger, then dispatch
-`subagent_type: {exec_agent}` — only if the plan stage passed its gate.
+Record `head_before` (`git -C "{tree}" rev-parse "{branch}"`) in the ledger, then dispatch `Agent`
+with `subagent_type: {exec_agent}`, `name: "exec-{n}"` and `run_in_background: true` — only if the
+plan stage passed its gate — and append the `armed` line with the returned `agentId`, exactly as
+in §6c.
 
 > You are a fully autonomous execution agent. Your only job is to execute the approved plan for
 > issue #{n}.
@@ -761,8 +780,9 @@ The gate asks whether the PR still applies to the base, **not** whether it is gr
 `UNSTABLE` are rc 0 because remediating CI and reviews is `/automerge`'s own cycle.
 
 On rc `0` or `1`: refresh the sentinel's `"stage"` to `exec` (keeping `session` untouched) so the 2 h
-cap and the rewake guard keep covering the merge, then dispatch `subagent_type: {exec_agent}` with
-the prompt `/automerge #{pr_number}`.
+cap and the rewake guard keep covering the merge, then dispatch `Agent` with
+`subagent_type: {exec_agent}`, `name: "merge-{n}"`, `run_in_background: true` and the prompt
+`/automerge #{pr_number}`, and append the `armed` line with the returned `agentId`.
 
 **The slot is freed only by §6g.** `MERGED` frees it for the next PR in queue order; anything else
 halts the run (R6). Append `{"t":"merge","event":"released"}` at that moment, never when the merge
@@ -806,7 +826,20 @@ the header declared.
 
 Then, **on every exit path — success, blocker, cap breach, error, abandonment**:
 
-1. `TaskStop` the Monitor and the teammate, by their **ledger-recorded** task IDs.
+1. `TaskStop` the Monitor, then the teammate, by the IDs on the stage's `armed` line. **Do this on
+   a clean return too.** A subagent that has returned its result is still registered with the
+   harness: `ListAgents` keeps showing it as `completed`, and the harness counts it among the
+   background agents it stops at `/clear`. The 20-issue /backlog run left 41 of them that way, one
+   plan and one exec per issue, because the clean-return path skipped this step. Record each reply:
+
+   | `TaskStop` reply | Record as | Then |
+   |---|---|---|
+   | success | `stopped` | continue |
+   | `No task found with ID: …` | `already-gone` | continue; the harness had released it |
+   | anything else | `failed` | the stage is **not** torn down; name it as a blocker |
+
+   A stage with no `armed` line has nothing to stop by ID. `TaskStop` by name instead (`plan-{n}`,
+   `exec-{n}`, `merge-{n}`), record the same outcome, and say in the summary that the ID was missing.
 2. ```bash
    bash __CLAUDE_HOME__/lib/backlog-teardown.sh {n} --pr {pr_number} \
      --root {repo_root} --integration {integration_branch} --branch "{branch}" \
@@ -822,7 +855,9 @@ Then, **on every exit path — success, blocker, cap breach, error, abandonment*
    Name it in the final summary and resolve it by hand. A sweep that reports **BLIND** means no
    snapshot was taken in §6a, so orphaned processes cannot be ruled out — record that as the
    blocker rather than reporting the stage torn down.
-3. Append the terminal ledger line.
+3. Append the `teardown` line — `{"t":"stage","issue":{n},"stage":"…","event":"teardown","monitor":"…","teammate":"…","rc":N}`,
+   with the two outcomes from step 1 and the script's exit code from step 2 — then the terminal
+   ledger line.
 4. If blocked or skipped, apply the `blocked` label (only if one already exists) and comment the
    cause on the issue.
 
@@ -834,7 +869,7 @@ previous one's monitor is still polling.
 
 | Signal | Threshold | Action |
 |---|---|---|
-| No commit **and** no PR state change **and** no plan-file write | 10 min (`stalls=10`) | `SendMessage` the **existing** teammate to re-poke it. Do not spawn a second |
+| No commit **and** no PR state change **and** no plan-file write | 10 min (`stalls=10`) | `SendMessage` the **existing** teammate to re-poke it. Do not spawn a second; its `agentId` is unchanged, so the `armed` line still names it |
 | Still no progress after a re-poke | 2 re-pokes (~30 min) | Teardown, record `blocked` |
 | Plan-stage wall clock | 30 min | Teardown, `plan stage exceeded 30m` |
 | Exec-stage wall clock (through `/pr`) | 90 min, or this issue's override | Teardown, `exec stage exceeded {cap}` |
@@ -894,11 +929,22 @@ jq -c 'select(.t=="run" and has("queue"))' "$L" | tail -1
 # And a completed run is not a resumable one:
 jq -c 'select(.t=="run")' "$L" | tail -1 | jq -r '.event // "header"'
 jq -c 'select(.t=="issue")' "$L" | jq -s 'group_by(.issue)|map(last)'
+# Watchers still armed — an `armed` line with no `teardown` — are stopped before anything resumes:
+jq -c 'select(.t=="stage" and (.event=="armed" or .event=="teardown"))' "$L" | jq -sc 'group_by([.issue,.stage])|map(select(last.event=="armed")|last)'
+# A stage line keyed "status" is malformed: nothing above can see it.
+jq -c 'select(.t=="stage" and has("status"))' "$L" | head -3
 # The merge slot: any PR whose last t:"merge" line is `dispatch` or `queued` still owns or awaits it.
 jq -c 'select(.t=="merge")' "$L" | jq -s 'group_by(.pr)|map(last)|map(select(.event!="released"))'
 ls {repo_root}/.claude/work-active-* {repo_root}/.claude/automerge-active-* 2>/dev/null
 git symbolic-ref --short HEAD; git status --porcelain; git stash list
 ```
+
+**Every `t:"stage"` line is keyed `event`.** If the last probe prints anything, the ledger was
+written by a run that did not follow the schema. Say so, and treat those stages as unswept: their
+IDs were never recorded, so `TaskStop` them by name (`plan-{n}`, `exec-{n}`, `merge-{n}`) and
+report the outcome. IDs from the `armed` probe are only meaningful inside the session that armed
+them; after `/clear` or a new session the harness has already stopped them, and a `No task found`
+reply is the expected one.
 
 **If the last `t:"run"` line reads `halted`, the run stopped on a merge failure (R6).** Resuming is
 legitimate, and it starts at that issue rather than past it — say which issue and PR halted it, and
@@ -942,12 +988,30 @@ overwrite each other's plan files in a way that passes the freshness gate, and c
 
 Sweep first, then report:
 
-- **`ListAgents`** (own subagents only — peer sessions belong to other runs) and
+- **The ledger first.** Every `armed` line with no `teardown` line for the same issue and stage
+  names a Monitor or teammate a stage left running:
+
+  ```bash
+  L={repo_root}/.claude/plans/_run-ledger.jsonl
+  jq -c 'select(.t=="stage" and (.event=="armed" or .event=="teardown"))' "$L" \
+    | jq -sc 'group_by([.issue,.stage]) | map(select(last.event=="armed") | last)
+              | .[] | {issue,stage,name,monitor,teammate}'
+  ```
+
+  `TaskStop` each `monitor` and `teammate` it lists, append the missing `teardown` line with the
+  outcomes, and report the count as **leaked by a stage** — a teardown path was skipped, and that
+  goes in the summary rather than being quietly repaired. A stage line keyed `status` instead of
+  `event` is invisible to this query; Step 8 names such a ledger as malformed.
+- **`ListAgents`** (own subagents only — peer sessions belong to other runs; a row marked
+  `completed` is still a candidate, because a returned subagent stays listed until stopped) and
   **`~/.claude/run/bg-tasks-$CLAUDE_CODE_SESSION_ID.json`** (monitors, teammates, background
   shells) — `TaskStop` any survivor and **say so**. An empty reading is "nothing reported live",
   never proof that nothing is live, and a missing or `absent` snapshot is not even that. A sentinel
   found after both views said nothing is a disagreement — name it.
 - `ls {repo_root}/.claude/*-active-*` → empty.
+- `ls ~/.claude/run/stage-pids-*.txt` → empty. `stage-processes.sh sweep` deletes the snapshot it
+  consumed, so a leftover is a stage whose `backlog-teardown.sh` never ran. Name the stage and run
+  the sweep by hand.
 - `git worktree list` → one entry. No per-issue branches survive:
   `git for-each-ref --format='%(refname:short)' refs/heads | grep -Ev '^(main|master|dev)$'` →
   empty. **Not** `git branch --list 'feature/*'`: that pattern misses every conventional prefix

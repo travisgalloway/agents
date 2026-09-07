@@ -98,6 +98,14 @@ backlog teardown calls the sweep before releasing the worktree, because a proces
 holding a working directory inside it makes the removal fail, and the failure then reads
 as uncommitted work.
 
+Subagents need the same treatment, and for the same reason. A backlog run over 20 issues
+ended on 2026-09-06 with 41 agents still registered, one plan and one exec for each issue.
+Two faults combined. The identifier was written to the ledger before the dispatch call
+returned, so it was never recorded and the final sweep had nothing to stop. A resumed
+session then wrote its stage lines under the wrong key, so a sweep reading the expected
+schema skipped that session completely. The ledger now records a line when a stage is armed
+and another on every exit path, and `ledger-sweep.sh` pins the query that pairs them.
+
 ## Orphaned processes
 
 Development servers survive the sessions that started them. `reap-orphans.sh` runs at
@@ -108,7 +116,7 @@ overridable by an environment variable, which is how the test suite drives it.
 
 ## Why the tests exist
 
-Twenty test files guard a personal configuration, which needs justifying. Each suite
+Twenty-one test files guard a personal configuration, which needs justifying. Each suite
 exists because a specific bug shipped and was expensive to find. The suite prints its own
 assertion total when it runs, and no document here restates that number, because a
 restated count is wrong on the next commit and nothing notices. Five examples show the
