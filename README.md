@@ -83,6 +83,10 @@ Editing a symlinked file needs nothing further. Editing a rendered file in `~/.c
 needs a `capture` before committing. Adding a file to the repository needs `install`
 re-run, since the installer works per file rather than linking whole directories.
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ## What is deliberately not here
 
 Runtime state is excluded and blocked by name in `.gitignore`: background job state at
