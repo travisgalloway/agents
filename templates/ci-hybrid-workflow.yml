@@ -7,6 +7,9 @@
 #
 # act's default actor is "nektos/act", so an `if: github.actor == 'nektos'` guard never matches.
 # Keying on the event name is what makes the split hold.
+#
+# The local job can also live in its own file with `on: workflow_dispatch` alone, which suits a
+# repository whose tests require every job in ci.yml to be gated by an aggregate job.
 name: CI
 
 on:
