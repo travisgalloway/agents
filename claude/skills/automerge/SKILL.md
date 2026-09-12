@@ -239,7 +239,10 @@ head_sha=$(git rev-parse HEAD)
 #  - A FAILED gh call must never reach the decision below. An empty $run caused by a
 #    network/auth/rate-limit error is indistinguishable from "no run exists for this commit",
 #    and past the grace window that reads as exit 3. Retry the tick, conclude nothing.
-wf=$(gh api "repos/{owner}/{repo}/actions/workflows/claude-review.yml" --jq '.id' 2>&1)
+# Probe the FILE at the head commit, not the workflows endpoint: GitHub keeps a deleted workflow
+# listed as active, so the old probe waited the whole grace window on every cycle after a repo
+# removed its review. Only a literal 404 means "not installed"; any other failure falls through.
+wf=$(gh api "repos/{owner}/{repo}/contents/.github/workflows/claude-review.yml?ref=$head_sha" --jq '.sha' 2>&1)
 case "$wf" in
   *"Not Found"*)
     echo "claude-review workflow not installed — skipping wait"; exit 3 ;;

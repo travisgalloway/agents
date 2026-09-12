@@ -54,13 +54,13 @@ case "$*" in
     [ "${GH_LIST_FAIL:-0}" = "1" ] && { echo "gh: could not connect to api.github.com" >&2; exit 1; }
     printf '%s\n' "${GH_PR_LIST:-OPEN}" ;;
   *"--json state"*) printf '%s\n' "${GH_PR_STATE:-OPEN}" ;;
-  *actions/workflows/claude-review.yml*)
+  *contents/.github/workflows/claude-review.yml*)
     # The review-workflow probe. "notfound" is gh's own 404 text, which is the ONLY answer
     # that may be read as "this repo has no review workflow"; "fail" is any other outage.
-    case "${GH_WF:-1234567}" in
+    case "${GH_WF:-0123456789abcdef0123456789abcdef01234567}" in
       notfound) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
       fail)     echo "gh: could not connect to api.github.com" >&2; exit 1 ;;
-      *)        printf '%s\n' "${GH_WF:-1234567}" ;;
+      *)        printf '%s\n' "${GH_WF:-0123456789abcdef0123456789abcdef01234567}" ;;
     esac ;;
   *actions/runs*)
     [ "${GH_RUN_FAIL:-0}" = "1" ] && { echo "gh: could not connect to api.github.com" >&2; exit 1; }

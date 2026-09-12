@@ -11,9 +11,9 @@ name: ci
 # prompting, and an unprompted edit in a default-permission session raises a permission request
 # nobody answers — the exact dispatch-then-idle stall the rewake hook exists to catch.
 description: Check CI status for the current PR and remediate failures. Invoked by /automerge in `auto` mode, or directly by you for an interactive plan-mode fix.
-argument-hint: "[interactive | auto]"
+argument-hint: "[interactive | auto | local]"
 arguments: mode
-allowed-tools: Read, Edit, Grep, Glob, Bash(git:*), Bash(gh:*), Bash(__CLAUDE_HOME__/lib/branches.sh)
+allowed-tools: Read, Edit, Grep, Glob, Bash(git:*), Bash(gh:*), Bash(act:*), Bash(docker:*), Bash(__CLAUDE_HOME__/lib/branches.sh)
 ---
 
 Repo context, pre-resolved (see `~/.claude/lib/branches.sh`; empty values mean unresolved):
@@ -27,11 +27,39 @@ Check CI status for the current PR and remediate any failures.
 **Mode** (default `interactive`):
 - **`interactive`** — fetch status, analyze failures, and enter plan mode for approval before fixing (Steps 4–5).
 - **`auto`** — wait for checks to complete, then remediate failures autonomously without plan mode or prompts (Step 5-auto). Used when invoked by `/automerge`.
+- **`local`** — run the repository's `local-commit-check` job on this machine under `act`, with no
+  pull request and no GitHub call (Step 0). The same job the pre-commit gate runs.
 
 **Invoked with:** `$mode`
 
 If nothing appears between those backticks, no argument was passed — use `interactive`.
 Every `{mode}` reference below means that resolved value.
+
+## Step 0: Local act run (`local` mode)
+
+Only when `{mode}` is `local`. Steps 1 to 5 do not apply; stop after this step.
+
+1. Verify the Docker daemon answers:
+   ```bash
+   docker info >/dev/null 2>&1 && echo DOCKER_UP || echo DOCKER_DOWN
+   ```
+   On `DOCKER_DOWN`, error: "Docker is not running. Start Docker Desktop, then rerun `/ci local`."
+2. Verify the repository defines the job. Anchor on the job key, not a prose mention:
+   ```bash
+   grep -lE '^[[:space:]]+local-commit-check:' .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null
+   ```
+   If nothing matches, report: "No `local-commit-check` job in `.github/workflows`. Add one from
+   `templates/ci-hybrid-workflow.yml` in the agents repository, then rerun." and stop.
+3. Run the job. The trigger is `workflow_dispatch`, which GitHub never fires on its own, so the
+   same file serves both sides:
+   ```bash
+   act workflow_dispatch -j local-commit-check
+   ```
+   Hold the call under the Bash ceiling (`timeout: 600000`). The first run on a machine pulls the
+   runner image and can take several minutes.
+4. Exit 0: report "Local CI passed under act." and stop.
+5. Exit non-zero: show the failing step's output, name the likely fix, and stop. Do not touch
+   GitHub, do not commit, and do not enter plan mode; the fix is the user's next move.
 
 ## Step 1: Detect Context
 

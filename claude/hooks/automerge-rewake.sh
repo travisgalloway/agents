@@ -437,11 +437,13 @@ for sentinel in "$repo_root"/.claude/automerge-active "$repo_root"/.claude/autom
   review_state="nohead"
   review_pending=""
   if [ -n "$head_oid" ]; then
-    wf_id=$(gh api "repos/$owner/$repo/actions/workflows/claude-review.yml" --jq '.id' 2>&1)
+    # The file at the head commit, not the workflows endpoint: GitHub keeps a deleted workflow
+    # listed as active there, which would read a removed review as forever pending.
+    wf_id=$(gh api "repos/$owner/$repo/contents/.github/workflows/claude-review.yml?ref=$head_oid" --jq '.sha' 2>&1)
     case "$wf_id" in
       *"Not Found"*) review_state="absent" ;;
       *)
-        printf '%s' "$wf_id" | grep -Eq '^[0-9]+$' || continue
+        printf '%s' "$wf_id" | grep -Eq '^[0-9a-f]{40}$' || continue
         review_state=$(gh api "repos/$owner/$repo/actions/runs?head_sha=$head_oid&per_page=50" \
           --jq '[(.workflow_runs // [])[]
                  | select(.path == ".github/workflows/claude-review.yml")]

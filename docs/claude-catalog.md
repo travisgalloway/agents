@@ -4,7 +4,7 @@ Every file this repository installs into `~/.claude`, with one line saying what 
 The tables follow the directory layout under `claude/`. For how the parts work together,
 read [claude-workflow.md](claude-workflow.md).
 
-Sixty-two files are tracked. Thirteen of them carry the `__CLAUDE_HOME__` token and are
+Sixty-four files are tracked. Thirteen of them carry the `__CLAUDE_HOME__` token and are
 rendered at install time rather than symlinked, because Claude Code needs a literal
 absolute path in those positions.
 
@@ -36,6 +36,12 @@ absolute path in those positions.
 | File | What it does |
 |---|---|
 | `deslop.md` | `/deslop`. Rewrites the prose in a named file against `style.md` and `mechanics.md`, showing a diff before writing. |
+
+## `git-hooks/` — the commit gate
+
+| File | What it does |
+|---|---|
+| `pre-commit` | The per-repo commit gate. Runs the repository's `local-commit-check` job under `act`, then sends the staged diff to the Antigravity CLI for a structured review; a `high` finding, a failing job, or a check that cannot be observed rejects the commit. Reached through a two-line shim that `install/install-hooks.sh` writes into a repository's hooks directory. |
 
 ## `hooks/` — event handlers
 
@@ -79,14 +85,14 @@ Twelve skills, 17 files. The vendored Cloudflare skills are not tracked here; se
 
 ## `tests/` — regression suites
 
-Twenty-one files. Run them with `bash ~/.claude/tests/run-all.sh`. No suite touches the
+Twenty-two files. Run them with `bash ~/.claude/tests/run-all.sh`. No suite touches the
 network, every GitHub call is served by a stub on the path, and git scenarios build
 throwaway repositories under the temporary directory. Each suite exports its own git
 configuration first, so the real git identity is never written.
 
 | File | What it pins |
 |---|---|
-| `run-all.sh` | Runs all 18 suites in a fixed order and sums their assertion tallies. An unparseable tally reports as unknown rather than zero. |
+| `run-all.sh` | Runs all 19 suites in a fixed order and sums their assertion tallies. An unparseable tally reports as unknown rather than zero. |
 | `lib.sh` | Shared assertion helpers, plus block extraction and the shell those blocks run under. |
 | `README.md` | Documents every suite, and explains why extracted blocks run under zsh. |
 | `lint-frontmatter.sh` | Only documented frontmatter keys appear in skills and agents. Catches the kebab-case and camel-case spelling mixup that silently disables enforcement. |
@@ -103,6 +109,7 @@ configuration first, so the real git identity is never written.
 | `backlog-guards.sh` | The asymmetry between the two branch scans: the guard refuses broadly, the teardown deletes exactly. |
 | `closure-audit-guards.sh` | Three irreversible-act invariants, and the three distinct meanings of a zero denominator. |
 | `stage-processes.sh` | The sweep that ends a stage's orphaned processes. Reproduces the leak rather than describing it, and pins that a missing snapshot reports blind rather than clean. |
+| `precommit-hook.sh` | The commit gate, with `act`, `docker`, and `agy` stubbed on a restricted path. A check that cannot run rejects, a high finding rejects with `file:line`, lockfiles never reach the prompt, and a displaced project hook still runs last. |
 | `reference-integrity.sh` | Every section citation resolves, every referenced document exists, and every dynamic-context injection names an absolute path. |
 | `skill-blocks-portability.sh` | Every bash fence in an authored skill runs under zsh, which is the shell that actually runs it. |
 | `reap-orphans.sh` | Which orphaned processes are adoptable, and that another session's process is never ended. |

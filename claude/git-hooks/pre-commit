@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# pre-commit: the per-repo commit gate. Phase A runs the repo's local-commit-check job under
+# nektos/act; Phase B sends the staged diff to the Antigravity CLI (agy) for a structured review.
+# A high finding, a failing act run, or a check that cannot be observed rejects the commit.
+# Lives once at ~/.claude/git-hooks/pre-commit; a repo reaches it through the two-line shim that
+# install/install-hooks.sh writes into .git/hooks/pre-commit.
+#
+# Bypasses, all explicit: SKIP_HOOKS=1 (everything), SKIP_ACT=1 (Phase A), SKIP_REVIEW=1 (Phase B).
+# Knobs: PRECOMMIT_REVIEW_MODEL, PRECOMMIT_REVIEW_FALLBACK_MODEL, PRECOMMIT_REVIEW_TIMEOUT,
+# PRECOMMIT_REVIEW_MAX_BYTES.
+#
+# Known limit: act runs the working tree, the review reads the index. With `git add -A` (what
+# /commit does) the two agree; with a partial stage they can differ.
+set -euo pipefail
+
+# One stream, so `git commit -q` cannot hide it and a transcript reads in order.
+say() { printf 'pre-commit: %s\n' "$*" >&2; }
+die() { say "$@"; exit 1; }
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/precommit.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+MODEL=${PRECOMMIT_REVIEW_MODEL:-gemini-3.8-flash-high}
+FALLBACK_MODEL=${PRECOMMIT_REVIEW_FALLBACK_MODEL:-gemini-3.7-flash-high}
+TIMEOUT=${PRECOMMIT_REVIEW_TIMEOUT:-4m}
+# The diff travels as one argv entry. macOS allows 1 MiB per argument; Linux caps one at 128 KiB,
+# so lower this on Linux.
+MAX_BYTES=${PRECOMMIT_REVIEW_MAX_BYTES:-200000}
+ACT_JOB=local-commit-check
+
+# agy rejects an array schema without `items` (INVALID_ARGUMENT), so every array carries one.
+SCHEMA='{"type":"object","required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","required":["file","line","severity","message","suggestion"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["low","medium","high"]},"message":{"type":"string"},"suggestion":{"type":"string"}}}}}}'
+
+# ---------------------------------------------------------------- guards
+
+guard_skip_all() {
+  if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    say "SKIP_HOOKS=1 set, skipping every check"
+    exit 0
+  fi
+}
+
+guard_nothing_staged() {
+  # Compares against the empty tree on an unborn HEAD, so a first commit is judged too.
+  if git diff --cached --quiet 2>/dev/null; then
+    exit 0
+  fi
+}
+
+# ---------------------------------------------------------------- phase A: act
+
+has_act_job() {
+  [ -d .github/workflows ] || return 1
+  # Anchor on the job key, so a prose mention of the name does not select the phase.
+  grep -qsE "^[[:space:]]+${ACT_JOB}:" .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null
+}
+
+phase_act() {
+  if [ "${SKIP_ACT:-0}" = "1" ]; then
+    say "SKIP_ACT=1 set, skipping the local act run"
+    return 0
+  fi
+  command -v act >/dev/null 2>&1 || return 0
+  has_act_job || return 0
+  if ! docker info >/dev/null 2>&1; then
+    die "docker is not running, so $ACT_JOB cannot run. Start Docker, or set SKIP_ACT=1 to bypass."
+  fi
+  say "running $ACT_JOB under act"
+  if ! act workflow_dispatch -j "$ACT_JOB" </dev/null >"$TMP/act.log" 2>&1; then
+    tail -n 80 "$TMP/act.log" >&2
+    die "$ACT_JOB failed under act. Fix the failure, or set SKIP_ACT=1 to bypass."
+  fi
+  say "$ACT_JOB passed under act"
+}
+
+# ---------------------------------------------------------------- phase B: review
+
+build_diff() {
+  # A leading `*` reaches nested lockfiles; git's default pathspec `*` crosses `/`.
+  git diff --cached --no-color --diff-filter=ACMR -- . \
+    ':!*.lock' ':!*package-lock.json' ':!*pnpm-lock.yaml' ':!*yarn.lock' ':!*go.sum' \
+    >"$TMP/diff.patch" 2>/dev/null || : >"$TMP/diff.patch"
+  DIFF_BYTES=$(wc -c <"$TMP/diff.patch" | tr -d ' ')
+}
+
+write_prompt() {
+  cat >"$TMP/prompt.txt" <<'EOF'
+You are a senior software engineer performing a pre-commit code review.
+
+You have no tools in this session. Do not try to read files, list directories, or run commands; every such call is denied and the review fails. The diff below is the complete input.
+
+Review ONLY the staged diff below. Do not assume anything about code that is not shown. Line numbers in your findings refer to the NEW version of the file (the "+" side of each hunk), as given by the @@ headers.
+
+Be conservative. Report only defects you are confident about from the diff itself. Do not report speculative issues, hypothetical inputs the diff gives no evidence of, or matters of taste. An empty findings list is a valid and common result.
+
+Severity definitions:
+- high: security vulnerability, data corruption or loss, crash or unhandled fatal error, build or syntax break, or a critical regression of existing behavior. A high finding blocks the commit.
+- medium: unhandled edge case, missing error handling on a fallible operation, performance problem or resource or memory leak, or complex new logic with no accompanying tests. Reported as advisory.
+- low: style, naming, readability. Counted only.
+
+Review standards:
+1. Correctness and logic: off-by-one errors, wrong operator, inverted condition, unreachable code, wrong return value, incorrect async or concurrency handling.
+2. Security: injection (shell, SQL, path), secrets in code, unsafe deserialization, missing authorization, unvalidated input reaching a sensitive sink.
+3. Breaking changes: removed or renamed public API, changed signature or return shape, changed configuration or CLI flags, migration without backward compatibility.
+4. Resources and performance: unbounded loops or allocations, unclosed handles, N+1 queries, blocking calls on hot paths, missing timeouts.
+5. Tests and maintainability: complex new logic without tests, tests that cannot fail, dead code, copy-paste divergence.
+
+For each finding give the file path exactly as it appears after "+++ b/" in the diff, the line number in the new file, the severity, a one-sentence message stating the defect, and a one-sentence suggestion for the fix. Put a one-line overall summary in "summary".
+
+Return JSON matching the provided schema and nothing else.
+
+=== STAGED DIFF ===
+EOF
+  cat "$TMP/diff.patch" >>"$TMP/prompt.txt"
+  printf '\n=== END DIFF ===\n' >>"$TMP/prompt.txt"
+}
+
+# run_agy <model> <outfile>
+run_agy() {
+  agy -p "$(cat "$TMP/prompt.txt")" --model "$1" --output-format json --json-schema "$SCHEMA" \
+    --disable-slash-commands --print-timeout "$TIMEOUT" \
+    </dev/null >"$2" 2>"$TMP/agy.err" || true
+}
+
+# review_ok <file>: SUCCESS with a findings array. A SUCCESS that ignored the schema is a retry.
+review_ok() {
+  jq -e '.status == "SUCCESS" and ((.structured_output.findings | type) == "array")' "$1" >/dev/null 2>&1
+}
+
+review_error() {
+  local msg
+  msg=$(jq -r '.error // empty | tostring' "$1" 2>/dev/null || true)
+  [ -n "$msg" ] || msg=$(tail -n 5 "$TMP/agy.err" 2>/dev/null | tr '\n' ' ')
+  printf '%s' "${msg:-no output from agy}"
+}
+
+count_sev() { jq --arg s "$1" '[.structured_output.findings[] | select(.severity == $s)] | length' "$2"; }
+
+print_findings() {
+  jq -r --arg s "$1" '.structured_output.findings[] | select(.severity == $s)
+    | "  \(.file):\(.line)  \(.message)\n      suggestion: \(.suggestion)"' "$2" >&2
+}
+
+report_review() {
+  local f="$1" high med low summary
+  high=$(count_sev high "$f"); med=$(count_sev medium "$f"); low=$(count_sev low "$f")
+  summary=$(jq -r '.structured_output.summary // ""' "$f")
+  [ -n "$summary" ] && say "review summary: $summary"
+  if [ "$med" -gt 0 ]; then
+    say "advisory (medium), $med finding(s):"
+    print_findings medium "$f"
+  fi
+  [ "$low" -gt 0 ] && say "$low low (style) finding(s) not listed"
+  if [ "$high" -gt 0 ]; then
+    say "BLOCKING (high), $high finding(s):"
+    print_findings high "$f"
+    die "$high high finding(s); commit rejected. Fix them, or set SKIP_REVIEW=1 to bypass."
+  fi
+  say "review passed"
+}
+
+phase_review() {
+  if [ "${SKIP_REVIEW:-0}" = "1" ]; then
+    say "SKIP_REVIEW=1 set, skipping the code review"
+    return 0
+  fi
+  if ! command -v agy >/dev/null 2>&1; then
+    say "agy not on PATH; review not performed"
+    return 0
+  fi
+  build_diff
+  if [ "$DIFF_BYTES" -eq 0 ]; then
+    say "nothing reviewable after lockfile exclusions"
+    return 0
+  fi
+  if [ "$DIFF_BYTES" -gt "$MAX_BYTES" ]; then
+    say "WARNING review skipped: staged diff is $DIFF_BYTES bytes, cap is $MAX_BYTES (PRECOMMIT_REVIEW_MAX_BYTES)"
+    return 0
+  fi
+  write_prompt
+  say "reviewing the staged diff with agy ($MODEL)"
+  run_agy "$MODEL" "$TMP/review.json"
+  if ! review_ok "$TMP/review.json"; then
+    say "review attempt failed ($(review_error "$TMP/review.json")); retrying with $FALLBACK_MODEL"
+    run_agy "$FALLBACK_MODEL" "$TMP/review.json"
+  fi
+  if ! review_ok "$TMP/review.json"; then
+    die "review unavailable after retry ($(review_error "$TMP/review.json")). An unobservable check is not a pass; set SKIP_REVIEW=1 to bypass."
+  fi
+  report_review "$TMP/review.json"
+}
+
+# ---------------------------------------------------------------- chaining
+
+run_local_hook() {
+  # --git-common-dir, not --git-path hooks: the latter follows core.hooksPath and would look in the
+  # global directory under a --global install. Worktrees share the common dir.
+  local hooks_dir
+  hooks_dir=$(git rev-parse --git-common-dir 2>/dev/null)/hooks
+  if [ -x "$hooks_dir/pre-commit.local" ]; then
+    exec "$hooks_dir/pre-commit.local" "$@"
+  fi
+}
+
+main() {
+  guard_skip_all
+  guard_nothing_staged
+  cd "$(git rev-parse --show-toplevel)"
+  phase_act
+  phase_review
+  run_local_hook "$@"
+}
+
+main "$@"

@@ -274,9 +274,11 @@ They can only gate — which is why they are annotated at the gate rather than s
    `claude-review`: requiring a slow context risks a transient `BLOCKED` with no retry, and §6e
    already gates the merge on it.
 4. **Detect whether the Claude code review is active**, once:
-   `gh api repos/{owner}/{repo}/actions/workflows/claude-review.yml --jq .id`. A 404 means the
-   workflow is not installed, so skip §6e for the whole run. Any other failure is unknown, not
-   absent: keep §6e armed rather than skipping a gate because one call did not answer.
+   `gh api "repos/{owner}/{repo}/contents/.github/workflows/claude-review.yml?ref={integration_branch}" --jq .sha`.
+   A 404 means the workflow is not installed, so skip §6e for the whole run. Any other failure is
+   unknown, not absent: keep §6e armed rather than skipping a gate because one call did not
+   answer. Probe the file, not the workflows endpoint: GitHub keeps a deleted workflow listed as
+   active there.
 5. **The gate.** Open with the **scope line**, then the **exclusion line**, then the queue.
 
    ```
