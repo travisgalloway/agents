@@ -7,9 +7,11 @@ Claude Code is populated. Gemini and Antigravity are reserved.
 
 | Path | Holds |
 |---|---|
-| `claude/` | A mirror of the shareable part of `~/.claude`. Sixty-two files, no repository metadata mixed in. |
+| `claude/` | A mirror of the shareable part of `~/.claude`. Sixty-four files, no repository metadata mixed in. |
 | `install/claude.sh` | Installs that mirror into `~/.claude`, and pulls edits back out again. |
+| `install/install-hooks.sh` | Points a repository at the shared pre-commit gate by writing a two-line shim into its hooks directory. `--global` sets `core.hooksPath` instead. |
 | `install/claude-plugins.txt` | The eight marketplace plugins to re-install. No plugin code is vendored. |
+| `templates/ci-hybrid-workflow.yml` | A starter workflow whose fast job runs under `act` before each commit and whose full suite runs on GitHub only for a pull request. |
 | `docs/` | What every tracked file does, how the parts work together, and what was deliberately left out. |
 | `gemini/` | Reserved. See [gemini/README.md](gemini/README.md). |
 

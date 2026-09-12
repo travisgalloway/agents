@@ -149,11 +149,11 @@ cat > "$WORK/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 [ "${GH_FAIL:-0}" = "1" ] && { echo "gh: could not connect" >&2; exit 1; }
 case "$*" in
-  *actions/workflows/claude-review.yml*)
-    case "${GH_WF:-1234567}" in
+  *contents/.github/workflows/claude-review.yml*)
+    case "${GH_WF:-0123456789abcdef0123456789abcdef01234567}" in
       notfound) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
       fail)     echo "gh: could not connect" >&2; exit 1 ;;
-      *)        printf '%s\n' "${GH_WF:-1234567}" ;;
+      *)        printf '%s\n' "${GH_WF:-0123456789abcdef0123456789abcdef01234567}" ;;
     esac ;;
   *actions/runs*)
     [ "${GH_RUN_FAIL:-0}" = "1" ] && { echo "gh: could not connect" >&2; exit 1; }

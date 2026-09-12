@@ -23,6 +23,14 @@ Repo context, pre-resolved (see `~/.claude/lib/branches.sh`; empty values mean u
 
 Fetch and address review comments for the current PR.
 
+## Pre-commit review versus pull-request review
+
+Two reviews exist and this skill handles one of them. The **pre-commit review** runs on this
+machine before any push: the git pre-commit gate sends the staged diff to the Antigravity CLI
+(`agy`) and a `high` finding rejects the commit (see `/commit` step 8). **This skill** retrieves,
+analyzes, and remediates feedback already posted on an open GitHub pull request, then resolves
+the threads. A finding the pre-commit review printed and the commit fixed never reaches here.
+
 **Mode** (default `interactive`):
 - **`interactive`** — present analysis, confirm with the user, and enter plan mode before fixing (Steps 4–5).
 - **`auto`** — skip all prompts and plan mode; remediate VALID comments and resolve every thread autonomously. Used when invoked by `/automerge`.

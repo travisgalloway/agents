@@ -1,0 +1,44 @@
+# Hybrid CI: fast checks run on your machine under nektos/act before every commit; the full suite
+# runs on GitHub only for a pull request.
+#
+# Local:  act workflow_dispatch -j local-commit-check      (what the pre-commit gate runs)
+# Cloud:  pull_request only. GitHub never fires workflow_dispatch on its own, and act selects the
+#         local job by that event, so neither side runs the other's job.
+#
+# act's default actor is "nektos/act", so an `if: github.actor == 'nektos'` guard never matches.
+# Keying on the event name is what makes the split hold.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs under act before each commit. Keep it to what finishes in a minute or two.
+  local-commit-check:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fast lint and unit tests
+        run: |
+          echo "replace with the project's fast checks, e.g. npm run lint && npm test"
+
+  # Runs on GitHub when a pull request opens or updates. Name this job in the branch ruleset's
+  # required status checks so the merge waits for it.
+  cloud-pre-merge-check:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full pre-merge suite
+        run: |
+          echo "replace with the integration suite, e.g. npm ci && npm run test:e2e"

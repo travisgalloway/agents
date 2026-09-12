@@ -70,7 +70,21 @@ Make a commit with conventional commit format:
      Use `-A`, not `git add .`: the bare form is **relative to the current working directory**, so
      run from a subdirectory (a monorepo package, or one of `/work`'s per-issue worktrees) it
      silently omits changes elsewhere in the repo — including files this command just listed.
-8. Create the commit with the formatted message
+8. Create the commit with the formatted message. When the repository has the pre-commit gate
+   installed (`install/install-hooks.sh` in the agents repository writes a shim into
+   `.git/hooks/pre-commit`), `git commit` runs two local checks first:
+   - **Phase A, act.** If a workflow under `.github/workflows` defines a `local-commit-check`
+     job, it runs under `act workflow_dispatch -j local-commit-check`. Docker not running, or the
+     job failing, rejects the commit and prints the failing step's output.
+   - **Phase B, review.** The staged diff goes to the Antigravity CLI (`agy`) for a structured
+     review by a Gemini model. A `high` finding rejects the commit and prints `file:line`, the
+     defect, and a suggestion. `medium` findings print as advisory; `low` findings are counted.
+     A review that cannot run (two failed attempts) also rejects; an unobservable check is not a
+     pass.
+
+   On a rejection, read the hook output, fix what it names, `git add -A`, and commit again. The
+   bypasses are `SKIP_ACT=1`, `SKIP_REVIEW=1`, `SKIP_HOOKS=1`, or `git commit --no-verify`; use
+   one only when the user asks for it, and never inside an autonomous `/work` stage.
 9. Display:
    - Commit type used
    - Full commit message
