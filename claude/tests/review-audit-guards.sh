@@ -218,4 +218,23 @@ done
 if [ "$i" -eq 0 ]; then bad "extracted NO fences — the check is void"
 else [ "$PARSE_FAIL" -eq 0 ] && ok "all $i fences parse under $BLOCK_SHELL"; fi
 
+# ---------------------------------------------------------------- 7. scanning routes off Opus
+section "Every audit skill pins its scanning model"
+
+# A paragraph that dispatches `Agent` must name the model in the same paragraph. Dropping
+# `model: "sonnet"` silently scans on the Opus session default.
+for f in "$UMBRELLA" "$ROOT"/skills/{closure,design,api,requirements,ux}-audit/SKILL.md; do
+  n=$(basename "$(dirname "$f")")
+  assert_eq "$n: frontmatter model is opus" "opus" "$(sed -n '2,/^---$/s/^model: *//p' "$f" | head -1)"
+  assert_not_contains "$n: never names fable" "$(cat "$f")" "fable"
+  unpinned=$(awk '
+    BEGIN { RS = ""; ORS = "\n" }
+    /^---/ { next }
+    /`Agent`|subagent_type/ { if ($0 !~ /model: "(sonnet|haiku)"/) print substr($0, 1, 80) }
+  ' "$f")
+  if [ -z "$unpinned" ]; then ok "$n: every Agent dispatch pins sonnet or haiku"
+  else bad "$n: an Agent dispatch has no model pin" "$unpinned"; fi
+done
+assert_not_contains "review-method.md never names fable" "$MSRC" "fable"
+
 summary

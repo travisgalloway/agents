@@ -86,7 +86,7 @@ Run once, and hand the results to every lens:
 
 ## Step 3: Dispatch in two waves
 
-**At most five parallel `Agent` calls per wave**, the threshold `/work` §0b uses. A deselected lens
+**At most five parallel `Agent` calls per wave, each with `model: "sonnet"`**, the threshold `/work` §0b uses. A deselected lens
 drops out of its wave, and an empty wave is skipped.
 
 | Wave | Subagents | Why this order |
@@ -94,8 +94,9 @@ drops out of its wave, and an empty wave is skipped.
 | **1** | closure passes A, B, C, D, E | requirements and design D1 read closure's results |
 | **2** | design (D1 then D2), api (P1 then P2), requirements (R1), ux static (U1), ux live (U2) | one subagent per lens, except UX, whose live pass holds a browser and a server |
 
-Each subagent gets the stack, the scope, its method section, and the absolute path of its output
-file under `{run_dir}`. Every `Agent` call in both waves passes `model: "sonnet"`. Each returns **a path, a denominator, a count, and one line.** Never
+Each subagent gets the stack, the scope, its method section, the repo map path
+(`$(~/.claude/lib/repo-map.sh path)`), and the absolute path of its output file under `{run_dir}`.
+Every `Agent` call in both waves passes `model: "sonnet"`. Each returns **a path, a denominator, a count, and one line.** Never
 findings as text. A wave-2 subagent that runs two passes returns one line per pass.
 
 When wave 1 ran, tell the design subagent that D1 skips `docs/contracts/`, because closure pass D

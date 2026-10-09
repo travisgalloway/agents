@@ -56,10 +56,14 @@ so it can be closed.
 2. **Model drift check.** `jq -r '.model // "unset"' ~/.claude/settings.json` must read `opus` or `opus[1m]`.
    The gate below ends a turn, and a session defaulting to anything else (such as `opusplan`)
    silently downgrades the classification work that follows it. Warn and continue if it disagrees.
-3. **Detect the stack** from manifests — `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`,
-   `Gemfile`, `pom.xml` — and read `CLAUDE.md` if the repo has one. The probes in Steps 2–3 are
-   stack-specific; a probe written for the wrong stack is the blind-monitor failure, and it reports
-   as a clean repo.
+3. **Read repo memory first.** Read the Repo map subsection of the repo `CLAUDE.md` and the file at
+   `$(~/.claude/lib/repo-map.sh path)`, when each exists. When together they name the stack and the
+   test runner, use them and skip the manifest probe. Otherwise detect the stack from manifests
+   (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml`) and read the rest
+   of `CLAUDE.md`. A map whose stamp is stale (`~/.claude/lib/repo-map.sh stale-paths` lists paths,
+   or prints `FULL`) is still a hint. Confirm its stack against one manifest before scanning. The
+   probes in Steps 2-3 are stack-specific, and a probe written for the wrong stack is the
+   blind-monitor failure, which reports as a clean repo.
 4. State the detected stack and test runner in output before scanning. If you cannot identify
    them, **say so and stop** — do not scan with guessed patterns.
 
@@ -100,7 +104,7 @@ backlog that already exists.
 Passes A and C key off this, so it comes before the fan-out.
 
 A **capability** is something a person can do, at the granularity `docs/feature-matrix.md` tracks.
-Derive them from what the repo exposes — routes, commands, jobs, public API surface — grouped by
+Derive them from what the repo exposes (routes, commands, jobs, public API surface), grouped by
 area, and give each a **stable ID** (`EXP-1`, `AUTH-2`). Reuse existing IDs when
 `docs/feature-matrix.md` is already present; that file is the authority on IDs already assigned.
 
@@ -108,13 +112,25 @@ area, and give each a **stable ID** (`EXP-1`, `AUTH-2`). Reuse existing IDs when
 and matrix rows by ID, so an ID that is regenerated differently on each run turns a groom into a
 duplicate-create. If `docs/feature-matrix.md` exists, IDs come from it and are never renumbered.
 
+Dispatch one `Agent` with `model: "sonnet"` to derive the set, so the Opus orchestrator does not
+read source. Sonnet matches renamed routes to existing matrix rows, which a smaller model does not
+do reliably. Give the subagent the stack, the scope, the repo map path
+(`$(~/.claude/lib/repo-map.sh path)`), `docs/feature-matrix.md` when it exists, and an absolute
+path to write to under `{repo_root}/.claude/audit/`. It returns **a path, a denominator, a count,
+and one line**, as in Step 3.
+
+Before passes A and C start, check every ID already in `docs/feature-matrix.md` against the
+subagent's output file. A missing ID is a blocker. Name it and stop, because continuing would
+renumber the matrix.
+
 Print the count. **Zero capabilities is a blocker**, not an empty repo.
 
 ## Step 3: The five passes
 
 Dispatch A–E as **parallel subagents** (`Agent` tool, ≤5 items — the same threshold `/work` §0b
 uses to choose the Agent tool over a Workflow). Give each the stack, the scope, the capability set,
-and an absolute path to write to under `{repo_root}/.claude/audit/`. Pass `model: "sonnet"` on every
+the repo map path (`$(~/.claude/lib/repo-map.sh path)`), and an absolute path to write to under
+`{repo_root}/.claude/audit/`. Pass `model: "sonnet"` on every
 dispatch. Each pass traces consumers, reads documents, or judges reachability, which a counting-only
 model does not do reliably.
 

@@ -23,6 +23,17 @@ unchanged. This file does not restate them.
 - Every finding is verified as CONFIRMED, PLAUSIBLE or REFUTED. REFUTED is dropped, and PLAUSIBLE
   is the default when evidence is absent.
 
+Every pass subagent also follows two reading rules.
+
+- The repo map is read first. Run `~/.claude/lib/repo-map.sh path`, read that file if it exists, then
+  run `~/.claude/lib/repo-map.sh stale-paths`. The output `FULL` means no valid cache, so read every
+  relevant area. Otherwise re-read only the listed paths and trust the cached entries for the rest.
+  The orchestrator passes the map path in each pass prompt.
+- Use the language server before grep. Identify the stack from the files the pass reads. Use whichever
+  installed LSP server covers that language for definitions, references, and symbol search. Fall back
+  to grep and glob for a language no installed server covers. Read the header of the repo map for
+  servers that answered earlier, and skip detection for those.
+
 ## Rule 1: the finding row
 
 Each pass subagent writes one JSON object per line to
