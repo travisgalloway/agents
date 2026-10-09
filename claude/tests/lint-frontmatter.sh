@@ -84,7 +84,7 @@ section "Skills / commands"
 # Our own skills, by name — the directory also holds vendor/Cloudflare skills we do not lint.
 # Adding a skill here is REQUIRED: a new skill missing from this list is silently skipped, which
 # reads as a pass. Two false passes in this suite have already come from that shape.
-OURS=" automerge backlog ci closure-audit commit feature-closure pr reap reviews status sync work "
+OURS=" api-audit audit automerge backlog ci closure-audit commit design-audit feature-closure pr reap requirements-audit reviews status sync ux-audit work "
 EXPECTED=$(printf '%s' "$OURS" | wc -w | tr -d ' ')
 
 found=0

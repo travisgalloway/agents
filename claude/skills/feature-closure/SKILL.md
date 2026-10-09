@@ -57,7 +57,7 @@ do not ask mid-task whether you should.
 
 ## Which part applies
 
-Read the one that matches. Do not read all five — that is the cost this split exists to avoid.
+Read the one that matches. Do not read them all — that is the cost this split exists to avoid.
 
 | If you are… | Read |
 |---|---|
@@ -65,6 +65,7 @@ Read the one that matches. Do not read all five — that is the cost this split 
 | Implementing an issue, fixing a bug, or making any code change | `references/execution.md` |
 | In a repository whose `CLAUDE.md` has no norms section, or a stale one — **once per repo** | `references/norms.md` |
 | Auditing an existing repo for work that is already half-finished, or grooming a backlog that predates any of this | `references/gap-detection.md` |
+| Reviewing shipped work for design correctness, API and data-model consistency, requirements fit, or UX | `~/.claude/skills/audit/references/review-method.md`, then that lens's file beside it |
 | Any task at all. Contracts are read before implementing; the feature matrix and test plan are updated in the same change as the code | `references/living-docs.md` |
 
 The paths are relative to this file: `~/.claude/skills/feature-closure/references/`.

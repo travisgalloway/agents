@@ -11,7 +11,7 @@ rc=0; total=0; unknown=""
 
 for t in lint-frontmatter jq-run-lookup ledger-sweep git-scenarios hook-sentinels branches \
          reap-orphans session-cleanup bg-snapshot rewake-observability automerge-merge-gate merge-gate work-probes \
-         backlog-guards closure-audit-guards stage-processes precommit-hook prepush-hook repo-map reference-integrity skill-blocks-portability; do
+         backlog-guards closure-audit-guards review-audit-guards stage-processes precommit-hook prepush-hook repo-map reference-integrity skill-blocks-portability; do
   printf '\033[1m━━ %s\033[0m\n' "$t"
   # Run ONCE and keep the output. The previous version ran each suite twice — once through a
   # pipe for display, once more for its status, because `sed` swallows the exit code. That
