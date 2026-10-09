@@ -32,14 +32,14 @@ Start or resume work on the issue(s)/PR(s) named by `{selector}`, drive each one
   - **Orchestrated mode** (multiple issues or a description selector): **One user gate only** — (1) **queue confirmation**, after which each issue's plan/exec subagents auto-accept plan + PR and run fully unattended. The main session acts as orchestrator, dispatching each issue's opus plan stage and `{exec_model}` exec stage in turn.
 - **Autonomous phases never prompt.** Implementing the approved plan, committing (per `/commit` conventions), and the `auto` merge phase all run without prompting. The merge phase delegates to **`/automerge`**, which itself uses **`/ci auto`** and **`/reviews auto`** — never invoke `/ci` or `/reviews` in their interactive modes from here, and never enter plan mode during the merge phase.
 - **Local or Remote Control.** This command runs identically whether driven from the local CLI or a Remote Control (web/mobile) session — it executes on the container either way. At each gate (and on completion/blocker) it calls the `PushNotification` tool so you can step away and respond from your phone. The notification shows locally as a desktop notification and pushes to your phone when Remote Control is connected; it no-ops gracefully if no push is sent (a "not sent" result is expected and needs no action).
-- **Model split.** Every issue is decomposed into a **plan stage** (`model: opus` — explore, design, produce the plan) and an **exec stage** (`model: sonnet` by default, or `opus` at effort `medium` when the `opus` token is passed — implement, commit, and, in orchestrated mode, PR + automerge). A single agent/worker cannot switch models mid-run, so these are always two separate subagent dispatches, never one. The exec model is decided once, at parse time (§ 0a), and applies to **every** exec dispatch in the run — inline, orchestrated, and the standalone merge stage alike. The two stages hand off via a written **plan file** at `.claude/plans/issue-{N}.md` (see "Plan-file handoff" below). This split applies identically in inline and orchestrated modes.
+- **Model split.** Every issue starts with a **scout stage** (`model: haiku` — read the code, write a context file, refresh the repo-map cache), then a **plan stage** (`model: opus` — explore, design, produce the plan) and an **exec stage** (`model: sonnet` by default, or `opus` at effort `medium` when the `opus` token is passed — implement, commit, and, in orchestrated mode, PR + automerge). A single agent/worker cannot switch models mid-run, so these are always two separate subagent dispatches, never one. The scout stage is best-effort: when it fails or returns no path, log one line and dispatch the plan stage without a context file. The exec model is decided once, at parse time (§ 0a), and applies to **every** exec dispatch in the run — inline, orchestrated, and the standalone merge stage alike. The two stages hand off via a written **plan file** at `.claude/plans/issue-{N}.md` (see "Plan-file handoff" below). This split applies identically in inline and orchestrated modes.
 - **The orchestrator itself runs in opus** — it is the session doing the decomposition, gating, and blocker triage, not mechanical work. Two things enforce this together, and both are required:
   - `model: opus` in this command's frontmatter, and
-  - `"model": "opus"` as the **session default** in `~/.claude/settings.json`.
+  - `"model": "opus"` (or `"opus[1m]"`, the 1M-context variant) as the **session default** in `~/.claude/settings.json`.
 
   A command's `model:` override only "applies for the rest of the current turn" — it is not sticky. Every user gate here (queue confirmation, plan approval, PR review) *ends a turn*, so on the next turn the session falls back to its default. If that default is anything but opus, the orchestrator silently downgrades mid-run, right after the plan gate.
 
-  For the same reason, **never set `opusplan` as the session default for this suite.** `opusplan` switches to sonnet the moment `ExitPlanMode` is called — which is exactly step 7 — so the orchestrator would drop to sonnet for implementation, PR, and merge. Use a plain `opus` default; the sonnet half of the split is delivered by the exec *subagent* dispatch, not by the session model.
+  For the same reason, **never set `opusplan` as the session default for this suite.** `opusplan` switches to sonnet the moment `ExitPlanMode` is called — which is exactly step 7 — so the orchestrator would drop to sonnet for implementation, PR, and merge. Use a plain `opus` or `opus[1m]` default; the sonnet half of the split is delivered by the exec *subagent* dispatch, not by the session model.
 
 ## Step-by-Step Instructions
 
@@ -59,10 +59,10 @@ Steps 0 and the integration-branch resolution run **once** for the whole run, no
 3. Most `gh` subcommands auto-detect the repo from the working directory, so `--repo
    {owner}/{repo}` is optional; pass it when you want to be explicit.
 4. **Model-drift check** — read the session default model: `jq -r '.model // "unset"' ~/.claude/settings.json`.
-   - `opus` → proceed silently.
+   - `opus` or `opus[1m]` → proceed silently.
    - `unset` → the session inherits the account default. Note it in one line — `session default
      model is unset; inheriting the account default` — and continue.
-   - anything else → print `⚠ session default model is '{model}', not 'opus': after each user gate
+   - anything else → print `⚠ session default model is '{model}', not 'opus' or 'opus[1m]': after each user gate
      this orchestrator falls back to it (see "Model split")` and continue.
 
    Warn only, never block: the user may have switched defaults deliberately, but the invariant in
@@ -163,13 +163,24 @@ When `{orchestrated}` is true, **do not run the inline per-issue loop below**. I
 ### Mechanism
 
 - **`{queue}` ≤ 5 issues** → use the **Agent tool** (teammate agents), named e.g. `plan-{n}` / `exec-{n}`. Easier to monitor and resume.
-- **`{queue}` > 5 issues** → use a **Workflow** `pipeline()` with two stages per issue — `agent(planPrompt, {agentType: 'work-plan', ...})` then `agent(execPrompt, {agentType: {exec_agent}, ...})` — so one issue's exec stage can run while the next issue's plan stage is still going (no barrier between stages).
+- **`{queue}` > 5 issues** → use a **Workflow** `pipeline()` with a scout stage (`agentType: 'work-scout'`) and two stages per issue — `agent(planPrompt, {agentType: 'work-plan', ...})` then `agent(execPrompt, {agentType: {exec_agent}, ...})` — so one issue's exec stage can run while the next issue's plan stage is still going (no barrier between stages).
 
 State the chosen mechanism in output before dispatching.
 
 ### Stage instructions
 
-For each issue `#{n}`, dispatch the plan stage, and once it completes, dispatch the exec stage.
+For each issue `#{n}`, dispatch the scout stage, then the plan stage, and once it completes, dispatch the exec stage.
+
+**Scout stage** (`work-scout` agent — haiku):
+
+> You are a fully autonomous scout agent. Your only job is to gather context for issue #{n}.
+>
+> Issue number, title, and body: `{n}`, `{title}`, `{body}`. Working tree: `{tree}`.
+>
+> Write `.claude/plans/issue-{n}.context.md` under the working tree and refresh the repo-map
+> cache. Return the context file's absolute path and nothing else.
+
+Dispatch it synchronously (`run_in_background: false`) at every `{parallel}`, because it ends before any wait. If it fails or returns no path, log `scout #{n}: no context file, planning without one` and dispatch the plan stage exactly as before. Otherwise add this line to the plan prompt: `Scout context: {context_path}. Read it first.`
 
 **Plan stage** (`work-plan` agent — opus):
 
@@ -217,7 +228,7 @@ Because each stage is given a single `#{n}` and never re-invokes `/work` itself,
 recursion — the orchestrator dispatches stages directly rather than delegating to another `/work`
 run.
 
-Dispatch both stages **by agent type** — `subagent_type: "work-plan"` (opus) and `subagent_type: {exec_agent}`, which is `"work-exec"` (sonnet) by default and `"work-exec-opus"` (opus at effort `medium`) when the `opus` token was passed — all defined in `~/.claude/agents/`. Their frontmatter carries the model and effort, `permissionMode: bypassPermissions` (so edits, commits, pushes, and `gh` calls never prompt), and the standing conventions (timestamp footer, no plan mode, return contract) — so none of that needs restating per dispatch. Do **not** pass the Agent tool's `mode` parameter: it is deprecated and silently ignored, and a subagent otherwise inherits the session's permission mode — which is exactly how an "autonomous" background stage ends up blocked forever on a permission prompt nobody will answer. Caveat: a parent session in `auto` mode suppresses the agent-defined `permissionMode`; run `/work` from default, `acceptEdits`, or `bypassPermissions` mode. Likewise, do **not** pass the Agent tool's `model:` (or a Workflow `effort:`) to compensate for the exec upgrade: the Agent tool has **no** `effort` parameter, so the agent file is the only thing that can express "opus at medium", and setting the model per-dispatch would split model and effort across two sources that silently disagree.
+Dispatch every stage **by agent type** — `subagent_type: "work-scout"` (haiku), `subagent_type: "work-plan"` (opus), and `subagent_type: {exec_agent}`, which is `"work-exec"` (sonnet) by default and `"work-exec-opus"` (opus at effort `medium`) when the `opus` token was passed — all defined in `~/.claude/agents/`. Their frontmatter carries the model and effort, `permissionMode: bypassPermissions` (so edits, commits, pushes, and `gh` calls never prompt), and the standing conventions (timestamp footer, no plan mode, return contract) — so none of that needs restating per dispatch. Do **not** pass the Agent tool's `mode` parameter: it is deprecated and silently ignored, and a subagent otherwise inherits the session's permission mode — which is exactly how an "autonomous" background stage ends up blocked forever on a permission prompt nobody will answer. Caveat: a parent session in `auto` mode suppresses the agent-defined `permissionMode`; run `/work` from default, `acceptEdits`, or `bypassPermissions` mode. Likewise, do **not** pass the Agent tool's `model:` (or a Workflow `effort:`) to compensate for the exec upgrade: the Agent tool has **no** `effort` parameter, so the agent file is the only thing that can express "opus at medium", and setting the model per-dispatch would split model and effort across two sources that silently disagree.
 
 ### Return contract (both stages, both modes)
 
@@ -852,7 +863,13 @@ At each natural stopping point, perform the following:
 
 ### 7. Plan (opus plan subagent, then user gate #2)
 
-After displaying the work context, delegate the design to the **`work-plan`** agent type (`Agent`,
+After displaying the work context, dispatch the **`work-scout`** agent type first (`Agent`,
+`subagent_type: "work-scout"` — haiku, synchronous, no `model:` or `mode:`) with the issue number,
+title, body, and working-tree path. It writes `.claude/plans/issue-{n}.context.md`, refreshes the
+repo-map cache, and returns the context path. If it fails or returns no path, log
+`scout #{n}: no context file, planning without one` and continue without it.
+
+Then delegate the design to the **`work-plan`** agent type (`Agent`,
 `subagent_type: "work-plan"` — opus with `permissionMode: bypassPermissions` in its definition;
 never pass the deprecated `mode:` param) — planning benefits from the stronger model, while the
 mechanical implementation later does not. **Dispatch it synchronously (`run_in_background: false`).**
@@ -876,7 +893,7 @@ So: the **orchestrator** owns the gate, and the **subagent** owns the plan file.
 other's job.
 
 **Dispatch the opus plan subagent** with the current issue context (number, title, body, task
-checklist, branch name) and have it:
+checklist, branch name, and the scout's context path when there is one) and have it:
 
 0. **Establish the done contract first**, before opening implementation files — load the
    `feature-closure` skill and follow its Part B §B1. The contract comes from the issue body. If
@@ -886,7 +903,8 @@ checklist, branch name) and have it:
    CSV export" is not a contract, and planning from it guarantees the drift the gate below
    exists to catch.
 
-1. **Explore the codebase** to understand current implementation state:
+1. **Explore the codebase** to understand current implementation state (read the scout's context
+   file first, and open further files only to confirm a design decision):
    - Read relevant files mentioned in tasks or the issue description
    - Understand existing patterns, architecture, and conventions
    - Identify dependencies and related code
@@ -1280,7 +1298,7 @@ If working on PR but no issue is linked:
 
 # 🔔 "/work: resolved 4 issues (#2,#3,#4,#5) — confirm to start (parallel=1)"
 # Mechanism: Agent tool (≤5 issues, sequential)
-# After you confirm, dispatches plan(opus) → exec(sonnet) per issue, one issue at a time.
+# After you confirm, dispatches scout(haiku) → plan(opus) → exec(sonnet) per issue, one issue at a time.
 # Each issue's plan stage auto-accepts the plan; its exec stage auto-accepts the PR.
 # No `auto`, so PRs are left open for review.
 #
@@ -1300,7 +1318,7 @@ If working on PR but no issue is linked:
 # Resolves the description to open issues, e.g.:
 # 🔔 "/work: resolved 3 issues (#7,#11,#14) — confirm to start (parallel=1)"
 # Mechanism: Agent tool (≤5 issues, sequential)
-# After you confirm, fully drives each one — plan(opus) → exec(sonnet) → merge — before the next.
+# After you confirm, fully drives each one — scout(haiku) → plan(opus) → exec(sonnet) → merge — before the next.
 #
 # /work summary (owner/repo) — orchestrated 3 issues
 # ✓ #7  fix: token refresh — merged (auto)  PR #41 <url>
@@ -1316,7 +1334,7 @@ If working on PR but no issue is linked:
 
 # Resolves to e.g. 8 issues → Workflow pipeline (>5)
 # 🔔 "/work: resolved 8 issues (#1,#2,...) — confirm to start (parallel=2)"
-# Two issues run concurrently, each in its own worktree shared by its plan(opus) and exec(sonnet)
+# Two issues run concurrently, each in its own worktree shared by its scout(haiku), plan(opus), and exec(sonnet)
 # stages; the next pair starts after both finish.
 ```
 
@@ -1334,7 +1352,7 @@ If working on PR but no issue is linked:
 ## Important Notes
 
 - **Selector forms**: `{selector}` accepts a single number (`#1`/`1`), a range (`#2-5`), a comma list (`#1,#3`), or a natural-language description (`'all P0 issues'`). Multi-issue and description selectors trigger **orchestrated mode**; a single explicit `#N` runs **inline**.
-- **Model split**: every issue is planned by an **opus** subagent and executed by a **sonnet** subagent — a single agent can't switch models mid-run, so these are always two dispatches, connected by a written plan file at `.claude/plans/issue-{N}.md` (§ 0c). Applies identically in inline and orchestrated modes.
+- **Model split**: every issue is scouted by a **haiku** subagent, planned by an **opus** subagent and executed by a **sonnet** subagent — a single agent can't switch models mid-run, so these are always two dispatches, connected by a written plan file at `.claude/plans/issue-{N}.md` (§ 0c). Applies identically in inline and orchestrated modes.
 - **`opus` token**: upgrades **every** exec dispatch in that run — implementation *and* the standalone merge stage — from sonnet to **opus at effort `medium`**, by dispatching the `work-exec-opus` agent instead of `work-exec`. The plan stage and orchestrator are already opus and unaffected. It is per-invocation: nothing is written to settings, so the next `/work` is back to sonnet. Reach for it when the implementation itself is the hard part, not just the design.
 - **Two modes, different gates**:
   - **Inline** (`#N` only): plan approval (`ExitPlanMode`) and PR review (before `/pr`) — two gates, unchanged from before.

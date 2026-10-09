@@ -113,6 +113,13 @@ Renaming a thing means updating what points at it, in the same change. A danglin
 same failure as a wrong document: it misleads every future task, and it is cheaper to fix now than
 for the next reader to discover the target is gone.
 
+## The Repo map section in CLAUDE.md
+
+The `CLAUDE.md` norms carry a **Repo map** subsection. It lists the layout, the entry points, the
+build and test commands, and where each concern lives, in 40 lines or fewer. The scout stage and
+every later stage read it before searching. Keep it current: a change that adds or moves a
+top-level directory or an entry point updates it in the same commit.
+
 ## The parking file
 
 `docs/parked-findings.md`. **Check first** whether the repository already keeps a backlog file or

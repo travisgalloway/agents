@@ -43,7 +43,8 @@ reads code, never writes an implementation, and never holds a plan file in conte
 
 - **One user gate for the whole run**: queue confirmation (Step 5). After it, every stage runs
   unattended.
-- **Three stages per issue**, each its own subagent dispatch: **plan** (`work-plan`, opus) →
+- **Four stages per issue**, each its own subagent dispatch: **scout** (`work-scout`, haiku) →
+  **plan** (`work-plan`, opus) →
   **exec** (`work-exec`, or `work-exec-opus` with the `opus` token) → **merge** (`{exec_agent}`
   running `/automerge`). A single agent cannot switch models mid-run, and splitting merge out keeps
   the exec stage from carrying `/automerge`'s 447 lines on top of an implementation.
@@ -65,9 +66,9 @@ reads code, never writes an implementation, and never holds a plan file in conte
    with "No GitHub repository found. This command requires a GitHub repo with an authenticated `gh`
    CLI." and stop.
 2. **Model-drift check** — `jq -r '.model // "unset"' ~/.claude/settings.json`.
-   - `opus` → proceed silently.
+   - `opus` or `opus[1m]` → proceed silently.
    - `unset` → note `session default model is unset; inheriting the account default` and continue.
-   - anything else → print `⚠ session default model is '{model}', not 'opus': after the queue gate
+   - anything else → print `⚠ session default model is '{model}', not 'opus' or 'opus[1m]': after the queue gate
      this orchestrator falls back to it` and continue.
 
    Warn, never block. And never set **`opusplan`** as the session default for this suite: it
@@ -597,6 +598,13 @@ say that you did. An `absent` snapshot answers nothing — re-arm rather than as
 
 ### 6c. Plan stage
 
+**Scout first.** Dispatch `Agent` with `subagent_type: "work-scout"`, `name: "scout-{n}"` and
+`run_in_background: false`, passing the issue number, title, body, and `{tree}`; no `model:` or
+`mode:`. The stage is short, ends before any wait, and arms no Monitor, so it writes no `armed` or
+`teardown` line. Append `{"t":"stage","issue":{n},"stage":"scout","event":"done","context":"…"}` when it
+returns a path, or `…"event":"failed"` when it returns none or errors, and in that case log one line
+and plan without a context file. A scout failure never blocks the run.
+
 Record `epoch` (`date +%s`) in the ledger **before** dispatching. Then `Agent` with
 `subagent_type: "work-plan"`, `name: "plan-{n}"` and `run_in_background: true`. The call returns
 at once with an `agentId`; that string is the teammate's task ID. Append the `armed` line now,
@@ -618,7 +626,9 @@ to "steps 1–7 of the inline loop" points at something it cannot see:
 >
 > Working tree: `{tree}`. Integration branch: `{integration_branch}`.
 >
-> 1. `gh issue view {n}` — read the body and its `- [ ]` checklist.
+> 1. `gh issue view {n}` — read the body and its `- [ ]` checklist. When the orchestrator gives a
+>    scout context path (`{context_path}`), read it first and open further files only to confirm a
+>    design decision.
 > 2. Check out `{integration_branch}`, `git fetch origin && git merge --ff-only`, then
 >    `git checkout -b "{branch}"`. **Use that branch name exactly as given — do not derive your own.**
 >    The orchestrator has already written it into this issue's sentinel and into the watcher that is
@@ -1096,7 +1106,7 @@ the codebase. File a follow-up issue quoting the plan's own wording, and list it
 
 ```
 /backlog
-    Enumerate, order, confirm. Each issue is planned by opus and implemented by sonnet;
+    Enumerate, order, confirm. Each issue is scouted by haiku, planned by opus, and implemented by sonnet;
     PRs are left open for review. Nothing merges.
 
 /backlog auto

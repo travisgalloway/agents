@@ -61,6 +61,7 @@ way. `deferred` / `open` = still outstanding, and repeated under "Still open" at
 | §3.6 `WorktreeCreate` / `WorktreeRemove` hooks | **deferred** | `tests/README.md` "Deferred" cites this section by number |
 | §3.7 `effort` per command | closed | `work: high`; `commit`/`status`/`sync`/`reap: low` |
 | §3.8 `allowed-tools` on `/ci`, `/reviews` | closed | both, as a superset of the proposal |
+| Model routing: `opus[1m]` drift check and Fable removal | closed | `skills/closure-audit/SKILL.md` Step 0 accepts `opus` and `opus[1m]`; `settings.json` sets `opus[1m]` with no Fable entry; `tests/lint-frontmatter.sh` fails on either regression. `/status` and `/sync` now pin haiku |
 | §3.9 model-pin consistency | closed | `/commit` pin dropped; `/status`, `/sync` retained as recommended |
 
 **Three items were corrected while implementing**, because building the tests disproved the stated

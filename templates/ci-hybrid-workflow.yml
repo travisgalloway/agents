@@ -2,6 +2,7 @@
 # runs on GitHub only for a pull request.
 #
 # Local:  act workflow_dispatch -j local-commit-check      (what the pre-commit gate runs)
+#         act pull_request -W <this file>                  (what the pre-push gate runs)
 # Cloud:  pull_request only. GitHub never fires workflow_dispatch on its own, and act selects the
 #         local job by that event, so neither side runs the other's job.
 #

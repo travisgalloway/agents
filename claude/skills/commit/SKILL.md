@@ -85,6 +85,8 @@ Make a commit with conventional commit format:
    On a rejection, read the hook output, fix what it names, `git add -A`, and commit again. The
    bypasses are `SKIP_ACT=1`, `SKIP_REVIEW=1`, `SKIP_HOOKS=1`, or `git commit --no-verify`; use
    one only when the user asks for it, and never inside an autonomous `/work` stage.
+   A later `git push` runs the pre-push gate, which executes the `pull_request` workflows under
+   `act`. The `/pr` skill documents it.
 9. Display:
    - Commit type used
    - Full commit message

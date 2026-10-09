@@ -1,6 +1,6 @@
 ---
 name: sync
-model: sonnet
+model: haiku
 effort: low
 description: Sync the release, integration, and current branches with the remote (fetch --all -p)
 allowed-tools: Bash(__CLAUDE_HOME__/lib/branches.sh)

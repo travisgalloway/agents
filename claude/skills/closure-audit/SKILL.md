@@ -7,6 +7,7 @@ argument-hint: "[area=<path>] [milestone=\"…\"] [label=…] [-label=…] [#N|#
 # `model: opus` + `effort: high` mirror /work and /backlog, and for the same reason: this session
 # classifies findings, decides ticket-vs-park, and slices capabilities — judgement work, not
 # mechanical work. The per-pass scanning is delegated to subagents where the model can be cheaper.
+# Scanning runs on sonnet at dispatch (`model: "sonnet"` on each `Agent` call), never on opus.
 # Both halves are required: a command's `model:` is not sticky past a turn boundary and the
 # confirmation gate ends a turn, so the settings.json drift check in Step 0 stays too.
 #
@@ -52,9 +53,9 @@ so it can be closed.
    above. If empty, resolve per `/work` §0 — `.claude/branch-config.json` →
    `gh repo view --json defaultBranchRef` → `git symbolic-ref refs/remotes/origin/HEAD` →
    `main`/`master`.
-2. **Model drift check.** `jq -r '.model // "unset"' ~/.claude/settings.json` must read `opus`.
-   The gate below ends a turn, and a session defaulting to anything else silently downgrades the
-   classification work that follows it. Warn and continue if it disagrees.
+2. **Model drift check.** `jq -r '.model // "unset"' ~/.claude/settings.json` must read `opus` or `opus[1m]`.
+   The gate below ends a turn, and a session defaulting to anything else (such as `opusplan`)
+   silently downgrades the classification work that follows it. Warn and continue if it disagrees.
 3. **Detect the stack** from manifests — `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`,
    `Gemfile`, `pom.xml` — and read `CLAUDE.md` if the repo has one. The probes in Steps 2–3 are
    stack-specific; a probe written for the wrong stack is the blind-monitor failure, and it reports
@@ -113,7 +114,9 @@ Print the count. **Zero capabilities is a blocker**, not an empty repo.
 
 Dispatch A–E as **parallel subagents** (`Agent` tool, ≤5 items — the same threshold `/work` §0b
 uses to choose the Agent tool over a Workflow). Give each the stack, the scope, the capability set,
-and an absolute path to write to under `{repo_root}/.claude/audit/`.
+and an absolute path to write to under `{repo_root}/.claude/audit/`. Pass `model: "sonnet"` on every
+dispatch. Each pass traces consumers, reads documents, or judges reachability, which a counting-only
+model does not do reliably.
 
 **Return contract, identical to `/work`'s:** each pass returns **a path, a denominator, a count,
 and one line**. Never findings as text. The orchestrator's context is what pays for a verbose pass,
