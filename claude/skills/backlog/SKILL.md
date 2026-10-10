@@ -45,7 +45,8 @@ reads code, never writes an implementation, and never holds a plan file in conte
   unattended.
 - **Four stages per issue**, each its own subagent dispatch: **scout** (`work-scout`, haiku) →
   **plan** (`work-plan`, opus) →
-  **exec** (`work-exec`, or `work-exec-opus` with the `opus` token) → **merge** (`{exec_agent}`
+  **exec** (`work-exec` or `work-exec-opus`, chosen per issue by its plan, or forced by the `opus`
+  or `sonnet` token) → **merge** (the issue's `{exec_agent}`
   running `/automerge`). A single agent cannot switch models mid-run, and splitting merge out keeps
   the exec stage from carrying `/automerge`'s 447 lines on top of an implementation.
 - **One merge at a time, run-wide.** The merge stage runs only with `auto`, and holds a single slot
@@ -82,8 +83,10 @@ Token stripping is order-independent:
 
 1. **`auto`** anywhere in the string → `{automerge} = true`; otherwise `false`.
 2. **`parallel=N`** → `{parallel} = N` (positive integer); otherwise `1`.
-3. **`opus`** as a standalone whitespace-delimited token → `{exec_model} = opus` and
-   `{exec_agent} = "work-exec-opus"`; otherwise `sonnet` / `"work-exec"`.
+3. **`opus`** or **`sonnet`** as a standalone whitespace-delimited token → `{exec_override}` is
+   that model; with neither, `{exec_override}` is empty. Both at once is a usage error. Each
+   issue's `{exec_model}` and `{exec_agent}` are resolved after its plan stage, by the table in
+   `work/SKILL.md` §0c "Choosing the exec model" (the override wins; a missing choice is opus).
 4. **Scope tokens**, each stripped from anywhere in the string:
    - **`milestone=<title>`** — exact milestone title, at most one. Quote a title containing spaces
      (`milestone="Phase B"`); unquoted, the second word survives into the remainder and rule 6
@@ -128,7 +131,7 @@ Token stripping is order-independent:
 
 A bare `/backlog` is valid and remains the primary invocation — `{automerge}=false` (so §6f is
 skipped and the run ends with one open PR per issue), `{parallel}=1`,
-`{exec_agent}="work-exec"`, scope `= the whole open backlog minus the default exclusions`. The scope
+`{exec_override}` empty (each plan chooses its exec model), scope `= the whole open backlog minus the default exclusions`. The scope
 selector narrows **which issues are dispatched**. It never narrows **what is read**: Step 3 always
 enumerates every open issue, for the reason given there.
 
@@ -302,7 +305,7 @@ They can only gate — which is why they are annotated at the gate rather than s
    Issues already in flight are **shown, not dropped**: the plan stage's resume logic handles them
    correctly, and seeing them lets the user drop some before confirming. The labels are printed for
    the same reason — a `type:spike` or a decision issue that no selector distinguishes is dropped
-   here, by a human, which is what this gate is for. State `{parallel}`, `{exec_model}`,
+   here, by a human, which is what this gate is for. State `{parallel}`, the exec model policy (per plan, or the forced override),
    `{automerge}`, the caps and any overrides.
 
    **State the merge policy in the same breath, because it is what the user is actually
@@ -342,7 +345,7 @@ Header, once, after the gate:
 
 ```json
 {"t":"run","ts":"…","session":"$CLAUDE_CODE_SESSION_ID","repo_root":"…","owner":"…","repo":"…",
- "integration_branch":"main","automerge":true,"parallel":1,"exec_agent":"work-exec-opus",
+ "integration_branch":"main","automerge":true,"parallel":1,"exec_override":"",
  "scope":{"raw":"milestone=\"Phase B\" -label=type:spike","milestone":"Phase B","labels":[],
           "exclude":["epic","blocked","type:spike"],"issues":null},
  "queue":[9,11,15],"parents":{"10":[9],"12":[11]},
@@ -360,7 +363,7 @@ One line per transition:
 {"t":"stage","issue":9,"stage":"plan","event":"armed","name":"plan-9","monitor":"<task-id>","teammate":"<agentId>"}
 {"t":"stage","issue":9,"stage":"plan","event":"done","plan_mtime":1754}
 {"t":"stage","issue":9,"stage":"plan","event":"teardown","monitor":"stopped","teammate":"already-gone","rc":0}
-{"t":"stage","issue":9,"stage":"exec","event":"dispatch","head_before":"abc123"}
+{"t":"stage","issue":9,"stage":"exec","event":"dispatch","head_before":"abc123","exec_agent":"work-exec-opus","exec_source":"plan"}
 {"t":"stage","issue":9,"stage":"exec","event":"armed","name":"exec-9","monitor":"<task-id>","teammate":"<agentId>"}
 {"t":"stage","issue":9,"stage":"exec","event":"done","pr":81,"head_after":"def456"}
 {"t":"stage","issue":9,"stage":"exec","event":"teardown","monitor":"stopped","teammate":"stopped","rc":0}
@@ -644,7 +647,8 @@ to "steps 1–7 of the inline loop" points at something it cannot see:
 >    run, build/typecheck commands, manual checks) · **Definition of done** (the numbered criteria
 >    that fix scope, the enumerated edge cases, and the command that proves each one — including
 >    that `docs/` contracts, the feature-matrix row and the test-plan row are updated in the same
->    commits as the code).
+>    commits as the code) · **Exec model** (one line: `opus` or `sonnet`, then a one-sentence
+>    reason, chosen by the criteria in `agents/work-plan.md`).
 >
 > Establish that last section **first**, before exploring — load the `feature-closure` skill and
 > follow its Part B §B1. The contract comes from the issue body; if the issue is thin, upgrade it
@@ -674,7 +678,9 @@ it wrote the one thing the exec stage's scope depends on:
 awk '/^## Definition of done/{f=1;next} f&&/^## /{exit} f&&NF{print;exit}' "{plan_file}"
 ```
 
-Empty output ⇒ blocker `plan stage returned without a done contract`. Without this check the
+Empty output ⇒ blocker `plan stage returned without a done contract`. Then resolve the issue's
+`{exec_agent}` with the `awk` line and table in `work/SKILL.md` §0c "Choosing the exec model", and
+record it with its source (`override`, `plan` or `fallback`) on the exec `dispatch` ledger line. Without this check the
 contract is only text in a dispatch prompt and nothing observes whether the stage honored it — and
 an unattended run across the whole backlog is exactly where an unobserved contract goes unnoticed
 for the longest.
@@ -888,7 +894,7 @@ previous one's monitor is still polling.
 | Merge stage | 2 h | Teardown, `merge exceeded 2h` |
 | An issue sitting in `merge-queued` | none — no cap, no stall rule | Its Monitor is stopped and nothing is working on it, so it cannot stall. The caps resume when it takes the merge slot |
 | Rewake hook's no-progress notice | 30 min plan / 45 min exec | **Verify first** — `git -C "{tree}" status --porcelain`. Uncommitted edits are invisible to the hook. Tear down only if genuinely stuck |
-| Rewake hook's "looks unwatched" nudge | never while a Monitor or teammate for that issue is live | Re-arm what is missing, re-check ground truth, answer briefly. A nudge is a prompt to check, not a verdict |
+| Rewake hook's "looks unwatched" nudge | never while a Monitor for that issue is live (a teammate entry does not count) | Re-arm what is missing, re-check ground truth, answer briefly. A nudge is a prompt to check, not a verdict |
 
 The 2 h merge allowance exists because `/automerge`'s own bounded waits — up to 5 cycles, each with
 a 30-minute CI cap and a 15-minute review cap — can legitimately sum past 90 minutes. Note that

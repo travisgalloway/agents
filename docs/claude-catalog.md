@@ -30,7 +30,7 @@ absolute path in those positions.
 | `work-scout.md` | Scout stage of the `/work` pipeline, pinned to haiku. Maps the files relevant to one issue and refreshes the cached repo map for the opus planner. |
 | `work-plan.md` | Plan stage of the `/work` pipeline. Explores the codebase for one issue and writes a plan file carrying a definition of done. |
 | `work-exec.md` | Exec stage. Implements an approved plan file to a finished pull request, parking every out-of-scope discovery. |
-| `work-exec-opus.md` | The same body as `work-exec.md`, pinned to opus at medium effort. Selected by the `opus` token on a `/work` invocation. |
+| `work-exec-opus.md` | The same body as `work-exec.md`, pinned to opus at medium effort. Selected per issue by the plan's `## Exec model` section, or for a whole run by the `opus` token. |
 
 ## `commands/` — slash commands
 
@@ -42,8 +42,9 @@ absolute path in those positions.
 
 | File | What it does |
 |---|---|
-| `pre-commit` | The per-repo commit gate. Runs the repository's `local-commit-check` job under `act`, then sends the staged diff to the Antigravity CLI for a structured review; a `high` finding, a failing job, or a check that cannot be observed rejects the commit. Reached through a two-line shim that `install/install-hooks.sh` writes into a repository's hooks directory. |
+| `pre-commit` | The per-repo commit gate. Runs the repository's `local-commit-check` job under `act`, then runs Claude Code's `/code-review` on the staged change and sorts its findings by severity; a `high` finding, a failing job, or a check that cannot be observed rejects the commit. Reached through a two-line shim that `install/install-hooks.sh` writes into a repository's hooks directory. |
 | `pre-push` | The per-repo push gate. Runs `act pull_request` for each workflow that declares a `pull_request` trigger before a push; a failing job or an unavailable Docker daemon rejects the push. |
+| `lib/act-run.sh` | Sourced by both hooks. Runs each long child in its own process group under a watchdog, stops the whole group on a timeout or a signal (TERM, then KILL after `HOOK_STOP_GRACE` seconds), and runs `act` with `--rm`. A sweep afterwards removes containers the run left, found by a per-run label or, for a job that sets `container:`, by an `act-` container that mounts the repository path and did not exist before the run. |
 
 ## `hooks/` — event handlers
 
@@ -118,7 +119,7 @@ configuration first, so the real git identity is never written.
 | `closure-audit-guards.sh` | Three irreversible-act invariants, and the three distinct meanings of a zero denominator. |
 | `review-audit-guards.sh` | A finding ID stable across edits, a UX dev server that always ends, untruncated backlog fetches, and the five-agent wave cap. |
 | `stage-processes.sh` | The sweep that ends a stage's orphaned processes. Reproduces the leak rather than describing it, and pins that a missing snapshot reports blind rather than clean. |
-| `precommit-hook.sh` | The commit gate, with `act`, `docker`, and `agy` stubbed on a restricted path. A check that cannot run rejects, a high finding rejects with `file:line`, lockfiles never reach the prompt, and a displaced project hook still runs last. |
+| `precommit-hook.sh` | The commit gate, with `act`, `docker`, and `claude` stubbed on a restricted path. A check that cannot run or times out rejects, a high finding rejects with `file:line`, a lockfile-only change calls no review, and a displaced project hook still runs last. |
 | `reference-integrity.sh` | Every section citation resolves, every referenced document exists, and every dynamic-context injection names an absolute path. |
 | `skill-blocks-portability.sh` | Every bash fence in an authored skill runs under zsh, which is the shell that actually runs it. |
 | `reap-orphans.sh` | Which orphaned processes are adoptable, and that another session's process is never ended. |
