@@ -26,8 +26,8 @@ Fetch and address review comments for the current PR.
 ## Pre-commit review versus pull-request review
 
 Two reviews exist and this skill handles one of them. The **pre-commit review** runs on this
-machine before any push: the git pre-commit gate sends the staged diff to the Antigravity CLI
-(`agy`) and a `high` finding rejects the commit (see `/commit` step 8). **This skill** retrieves,
+machine before any push: the git pre-commit gate runs Claude Code's `/code-review` on the staged
+change, and a `high` finding rejects the commit (see `/commit` step 8). **This skill** retrieves,
 analyzes, and remediates feedback already posted on an open GitHub pull request, then resolves
 the threads. A finding the pre-commit review printed and the commit fixed never reaches here.
 

@@ -2,7 +2,7 @@
 # prepush-hook.sh (test) — pin git-hooks/pre-push, the per-repo push gate, and the pre-commit and
 # pre-push shims that install/install-hooks.sh writes.
 #
-# act, docker, and timeout are stubs on PATH driven by STUB_* variables, so the suite runs with
+# act and docker are stubs on PATH driven by STUB_* variables, so the suite runs with
 # Docker down and no network. Pushes go to a local bare remote through the real git, so the
 # hook sees the stdin format git produces.
 #
@@ -22,8 +22,8 @@ ok "hook present and executable"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/prepush.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT INT TERM
-BIN="$WORK/bin"; TBIN="$WORK/tbin"; REPO="$WORK/repo"; REMOTE="$WORK/remote.git"; FAKEHOME="$WORK/home"
-mkdir -p "$BIN" "$TBIN" "$REPO" "$FAKEHOME"
+BIN="$WORK/bin"; REPO="$WORK/repo"; REMOTE="$WORK/remote.git"; FAKEHOME="$WORK/home"
+mkdir -p "$BIN" "$REPO" "$FAKEHOME"
 
 export STUB_LOG="$WORK/calls.log"
 # System directories only, so no case reaches a real act or docker.
@@ -34,26 +34,36 @@ git config --global user.email t@example.com
 git config --global user.name Test
 git config --global init.defaultBranch main
 
+# STUB_DOCKER_RC fails `docker info`. STUB_DOCKER_LEFTOVER=1 makes the label query find STUBCID.
+# STUB_DOCKER_PATHLEFT=1 makes the repo-path query find STUBPATH after the run only, and
+# STUB_DOCKER_PATHPRE=1 makes it find STUBPRE before and after, as a container the run did not start.
 cat > "$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
 printf 'CALL docker %s\n' "$*" >> "$STUB_LOG"
-exit "${STUB_DOCKER_RC:-0}"
+case "$1" in
+  info)    exit "${STUB_DOCKER_RC:-0}" ;;
+  ps)
+    case "$*" in
+      *volume=*)
+        [ "${STUB_DOCKER_PATHPRE:-0}" = 1 ] && echo STUBPRE
+        n=$(grep -c 'CALL docker ps.*volume=' "$STUB_LOG")
+        [ "${STUB_DOCKER_PATHLEFT:-0}" = 1 ] && [ "$n" -ge 2 ] && echo STUBPATH ;;
+      *) [ "${STUB_DOCKER_LEFTOVER:-0}" = 1 ] && echo STUBCID ;;
+    esac
+    exit 0 ;;
+  inspect) echo "act-STUBVOL-env act-toolcache " ;;
+esac
+exit 0
 STUB
+# STUB_ACT_SLEEP keeps the run alive, as a foreground sleep child, so a stop must reach the tree.
 cat > "$BIN/act" <<'STUB'
 #!/usr/bin/env bash
 printf 'CALL act %s\n' "$*" >> "$STUB_LOG"
+[ -z "${STUB_ACT_SLEEP:-}" ] || sleep "$STUB_ACT_SLEEP"
 [ "${STUB_ACT_RC:-0}" = "0" ] || echo "STUBACT step failed"
 exit "${STUB_ACT_RC:-0}"
 STUB
-# Lives in TBIN, put on PATH only by the cases that want a timeout binary.
-cat > "$TBIN/timeout" <<'STUB'
-#!/usr/bin/env bash
-printf 'CALL timeout %s\n' "$*" >> "$STUB_LOG"
-[ -z "${STUB_TIMEOUT_RC:-}" ] || exit "$STUB_TIMEOUT_RC"
-shift
-exec "$@"
-STUB
-chmod +x "$BIN/docker" "$BIN/act" "$TBIN/timeout"
+chmod +x "$BIN/docker" "$BIN/act"
 [ "$(command -v act)" = "$BIN/act" ] || { bad "act on PATH is not the stub: $(command -v act)"; summary; exit 1; }
 ok "act on PATH is the stub"
 
@@ -122,7 +132,12 @@ try_push STUB_ACT_RC=1
 assert_eq "act failure rejected" "1" "$RC"
 assert_contains "names the bypass" "$OUT" "SKIP_PREPUSH_ACT=1"
 assert_contains "act output shown" "$OUT" "STUBACT step failed"
-assert_contains "act ran the pull_request event on the file" "$(cat "$STUB_LOG")" "CALL act pull_request -W .github/workflows/ci.yml"
+assert_contains "act ran the pull_request event on the file" "$(cat "$STUB_LOG")" "pull_request -W .github/workflows/ci.yml"
+assert_contains "act removes containers after a failure" "$(cat "$STUB_LOG")" "CALL act --rm"
+assert_contains "act labels this run's containers" "$(cat "$STUB_LOG")" "--container-options --label claude.githook.run=pre-push-"
+try_push STUB_ACT_RC=1 STUB_DOCKER_LEFTOVER=1
+assert_eq "act failure rejected" "1" "$RC"
+assert_contains "the label sweep removes a leftover container" "$(cat "$STUB_LOG")" "CALL docker rm -f STUBCID"
 assert_eq "branch absent on the remote" "" "$(git -C "$REMOTE" branch --list "b$N")"
 
 section "A passing act run allows the push"
@@ -156,22 +171,19 @@ assert_eq "no act call" "0" "$(calls act)"
 assert_eq "no docker call" "0" "$(calls docker)"
 
 # ============================================================ timeout
-section "Timeout binary"
-try_push PATH="$TBIN:$PATH" PREPUSH_ACT_TIMEOUT=3s
-assert_eq "push passes" "0" "$RC"
-assert_contains "timeout wraps act with the knob" "$(cat "$STUB_LOG")" "CALL timeout 3s act pull_request"
-try_push PATH="$TBIN:$PATH" STUB_TIMEOUT_RC=124
+section "PREPUSH_ACT_TIMEOUT"
+start=$(date +%s)
+try_push PREPUSH_ACT_TIMEOUT=1s STUB_ACT_SLEEP=8
 assert_eq "timeout rejected" "1" "$RC"
-assert_contains "output names the timeout" "$OUT" "timed out"
+assert_contains "output names the timeout" "$OUT" "timed out after 1s"
 assert_contains "names the bypass" "$OUT" "SKIP_PREPUSH_ACT=1"
-if PATH="/usr/bin:/bin:/usr/sbin:/sbin" command -v timeout >/dev/null 2>&1 \
-   || PATH="/usr/bin:/bin:/usr/sbin:/sbin" command -v gtimeout >/dev/null 2>&1; then
-  printf '  note: a system timeout exists, so the no-binary case is skipped\n'
-else
-  try_push
-  assert_eq "no timeout binary still passes" "0" "$RC"
-  assert_contains "says it runs without a limit" "$OUT" "without a time limit"
-fi
+[ $(( $(date +%s) - start )) -lt 6 ] && ok "the watchdog ended act early" || bad "the watchdog did not end act"
+if pgrep -f 'sleep 8$' >/dev/null; then bad "act's child outlived the timeout"; else ok "no act process outlived the timeout"; fi
+try_push PREPUSH_ACT_TIMEOUT=2m
+assert_eq "minutes accepted" "0" "$RC"
+try_push PREPUSH_ACT_TIMEOUT=soon
+assert_eq "a malformed duration rejects" "1" "$RC"
+assert_contains "names the knob" "$OUT" "PREPUSH_ACT_TIMEOUT=soon"
 
 # ============================================================ chaining
 section "pre-push.local runs last with the original args and stdin"

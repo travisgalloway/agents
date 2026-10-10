@@ -7,7 +7,8 @@
 #
 # Bypasses, all explicit: SKIP_HOOKS=1 (everything), SKIP_PREPUSH_ACT=1 (the act run).
 # Knobs: PREPUSH_ACT_EXCLUDE (space-separated workflow basenames, default claude-review.yml, which
-# needs cloud secrets), PREPUSH_ACT_TIMEOUT (default 15m, per workflow).
+# needs cloud secrets), PREPUSH_ACT_TIMEOUT (default 15m, per workflow; N, Ns, Nm or Nh),
+# HOOK_STOP_GRACE (lib/act-run.sh).
 #
 # Known limit: act runs the working tree, and git pushes commits. With uncommitted edits the two
 # can differ.
@@ -18,7 +19,11 @@ say() { printf 'pre-push: %s\n' "$*" >&2; }
 die() { say "$@"; exit 1; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/prepush.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT INT TERM
+HOOK_NAME=pre-push
+# readlink -f, because ~/.claude/git-hooks/pre-push is a symlink into the clone.
+# shellcheck source=lib/act-run.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib/act-run.sh"
+hook_traps
 
 EXCLUDE=${PREPUSH_ACT_EXCLUDE:-claude-review.yml}
 TIMEOUT=${PREPUSH_ACT_TIMEOUT:-15m}
@@ -46,6 +51,17 @@ pushes_commits() {
 
 # ---------------------------------------------------------------- act
 
+# to_seconds <N|Ns|Nm|Nh>: the duration in seconds, or non-zero for anything else.
+to_seconds() {
+  local n=${1%[smh]}
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return 1
+  case "$1" in
+    *h) printf '%s\n' $((n * 3600)) ;;
+    *m) printf '%s\n' $((n * 60)) ;;
+    *) printf '%s\n' "$n" ;;
+  esac
+}
+
 # Workflow files that declare a pull_request trigger, minus the exclusions, one per line.
 pr_workflows() {
   local f base ex skip
@@ -64,24 +80,18 @@ pr_workflows() {
 phase_act() {
   command -v act >/dev/null 2>&1 || { say "act not installed; local CI run skipped"; return 0; }
   [ -d .github/workflows ] || return 0
-  local files f to_bin="" rc
+  local files f limit rc
   files=$(pr_workflows)
   [ -n "$files" ] || return 0
   if ! docker info >/dev/null 2>&1; then
     die "docker is not running, so the pull_request workflows cannot run. Start Docker, or set SKIP_PREPUSH_ACT=1 to bypass."
   fi
-  if command -v timeout >/dev/null 2>&1; then to_bin=timeout
-  elif command -v gtimeout >/dev/null 2>&1; then to_bin=gtimeout
-  else say "no timeout or gtimeout on PATH; running act without a time limit"; fi
+  limit=$(to_seconds "$TIMEOUT") || die "PREPUSH_ACT_TIMEOUT=$TIMEOUT is not a duration (N, Ns, Nm or Nh)."
 
   while IFS= read -r f; do
     say "running $f under act (pull_request)"
     rc=0
-    if [ -n "$to_bin" ]; then
-      "$to_bin" "$TIMEOUT" act pull_request -W "$f" </dev/null >"$TMP/act.log" 2>&1 || rc=$?
-    else
-      act pull_request -W "$f" </dev/null >"$TMP/act.log" 2>&1 || rc=$?
-    fi
+    act_run "$TMP/act.log" "$limit" pull_request -W "$f" || rc=$?
     if [ "$rc" -ne 0 ]; then
       tail -n 80 "$TMP/act.log" >&2
       if [ "$rc" -eq 124 ]; then
