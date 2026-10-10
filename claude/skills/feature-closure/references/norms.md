@@ -29,6 +29,8 @@ this stack**. Cover at least:
 
 - **Stack and versions**, including anything with a migration in flight
 - **Directory layout**, and where a new feature's files belong on each layer
+- **A Repo map** of 40 lines or fewer: layout, entry points, build and test commands, and where
+  each concern lives. Agents read it before searching, so keep it current when structure moves
 - **Naming conventions** for files, components, hooks, endpoints, database objects
 - **State management and data fetching**, with the one blessed way to do it
 - **API contract conventions** — request and response shapes, status codes, error envelope,

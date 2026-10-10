@@ -1,6 +1,6 @@
 ---
 name: status
-model: sonnet
+model: haiku
 effort: low
 description: Show current development status for the active feature branch — issue, checklist progress, and git stats
 allowed-tools: Bash(__CLAUDE_HOME__/lib/branches.sh)

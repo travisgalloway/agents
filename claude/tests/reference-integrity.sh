@@ -29,7 +29,7 @@ ROOT="${CLAUDE_ROOT:-$HOME/.claude}"
 
 # Locally-authored skills only; vendored ones (cloudflare, wrangler, …) are documentation snippets
 # whose cross-references we neither own nor maintain.
-OURS="automerge backlog ci closure-audit commit feature-closure pr reap reviews status sync work"
+OURS="api-audit audit automerge backlog ci closure-audit commit design-audit feature-closure pr reap requirements-audit reviews status sync ux-audit work"
 
 # Skills with NO `##` headings — flat numbered lists. Citing `§N` into one of these is a category
 # error: it looks valid, resolves to nothing, and is how violation #2 above survived review.
@@ -40,7 +40,8 @@ for s in $OURS; do
   f="$ROOT/skills/$s/SKILL.md"
   [ -f "$f" ] && FILES="$FILES $f"
 done
-for f in "$ROOT"/skills/feature-closure/references/*.md "$ROOT"/agents/*.md; do
+for f in "$ROOT"/skills/feature-closure/references/*.md "$ROOT"/skills/audit/references/*.md \
+         "$ROOT"/agents/*.md; do
   [ -f "$f" ] && FILES="$FILES $f"
 done
 
@@ -90,7 +91,9 @@ for f in $FILES; do
       backlog.md|parked-findings.md|feature-matrix.md|test-plan.md|exports.md|README.md) continue ;;
     esac
     CHECKED=$((CHECKED+1))
+    # The audit lenses cite their method files by bare name, from their own skill dirs.
     if [ -f "$d/$ref" ] || [ -f "$ROOT/skills/feature-closure/references/$(basename "$ref")" ] \
+       || [ -f "$ROOT/skills/audit/references/$(basename "$ref")" ] \
        || [ -f "$ROOT/agents/$(basename "$ref")" ]; then :
     else MISSING=$((MISSING+1)); bad "referenced file does not exist: $ref" "${f#$ROOT/}"; fi
   done

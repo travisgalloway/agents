@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# pre-push: the per-repo push gate. Runs every pull_request workflow under nektos/act, so a push
+# is rejected locally for a failure the cloud run would report later. A failing run, a timeout,
+# or Docker not running rejects the push.
+# Lives once at ~/.claude/git-hooks/pre-push; a repo reaches it through the two-line shim that
+# install/install-hooks.sh writes into .git/hooks/pre-push.
+#
+# Bypasses, all explicit: SKIP_HOOKS=1 (everything), SKIP_PREPUSH_ACT=1 (the act run).
+# Knobs: PREPUSH_ACT_EXCLUDE (space-separated workflow basenames, default claude-review.yml, which
+# needs cloud secrets), PREPUSH_ACT_TIMEOUT (default 15m, per workflow; N, Ns, Nm or Nh),
+# HOOK_STOP_GRACE (lib/act-run.sh).
+#
+# Known limit: act runs the working tree, and git pushes commits. With uncommitted edits the two
+# can differ.
+set -euo pipefail
+
+# One stream, so `git push -q` cannot hide it and a transcript reads in order.
+say() { printf 'pre-push: %s\n' "$*" >&2; }
+die() { say "$@"; exit 1; }
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/prepush.XXXXXX")
+HOOK_NAME=pre-push
+# readlink -f, because ~/.claude/git-hooks/pre-push is a symlink into the clone.
+# shellcheck source=lib/act-run.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib/act-run.sh"
+hook_traps
+
+EXCLUDE=${PREPUSH_ACT_EXCLUDE:-claude-review.yml}
+TIMEOUT=${PREPUSH_ACT_TIMEOUT:-15m}
+ZERO_SHA=0000000000000000000000000000000000000000
+
+# ---------------------------------------------------------------- guards
+
+guard_skip_all() {
+  if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    say "SKIP_HOOKS=1 set, skipping every check"
+    exit 0
+  fi
+}
+
+# Git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+# Returns non-zero when every ref is a deletion, so there is nothing for CI to check.
+pushes_commits() {
+  local _lref lsha _rref _rsha pushing=0
+  while read -r _lref lsha _rref _rsha; do
+    [ -n "$lsha" ] || continue
+    [ "$lsha" = "$ZERO_SHA" ] || pushing=1
+  done <"$TMP/stdin"
+  [ "$pushing" -eq 1 ]
+}
+
+# ---------------------------------------------------------------- act
+
+# to_seconds <N|Ns|Nm|Nh>: the duration in seconds, or non-zero for anything else.
+to_seconds() {
+  local n=${1%[smh]}
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return 1
+  case "$1" in
+    *h) printf '%s\n' $((n * 3600)) ;;
+    *m) printf '%s\n' $((n * 60)) ;;
+    *) printf '%s\n' "$n" ;;
+  esac
+}
+
+# Workflow files that declare a pull_request trigger, minus the exclusions, one per line.
+pr_workflows() {
+  local f base ex skip
+  for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    skip=0
+    for ex in $EXCLUDE; do [ "$ex" = "$base" ] && skip=1; done
+    [ "$skip" -eq 0 ] || continue
+    # The trailing class keeps pull_request_target from matching.
+    grep -vE '^[[:space:]]*#' "$f" | grep -qE '(^|[^A-Za-z0-9_])pull_request([^A-Za-z0-9_]|$)' || continue
+    printf '%s\n' "$f"
+  done
+}
+
+phase_act() {
+  command -v act >/dev/null 2>&1 || { say "act not installed; local CI run skipped"; return 0; }
+  [ -d .github/workflows ] || return 0
+  local files f limit rc
+  files=$(pr_workflows)
+  [ -n "$files" ] || return 0
+  if ! docker info >/dev/null 2>&1; then
+    die "docker is not running, so the pull_request workflows cannot run. Start Docker, or set SKIP_PREPUSH_ACT=1 to bypass."
+  fi
+  limit=$(to_seconds "$TIMEOUT") || die "PREPUSH_ACT_TIMEOUT=$TIMEOUT is not a duration (N, Ns, Nm or Nh)."
+
+  while IFS= read -r f; do
+    say "running $f under act (pull_request)"
+    rc=0
+    act_run "$TMP/act.log" "$limit" pull_request -W "$f" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      tail -n 80 "$TMP/act.log" >&2
+      if [ "$rc" -eq 124 ]; then
+        die "$f timed out after $TIMEOUT under act, which counts as a rejection. Raise PREPUSH_ACT_TIMEOUT, or set SKIP_PREPUSH_ACT=1 to bypass."
+      fi
+      die "$f failed under act. Fix the failure, or set SKIP_PREPUSH_ACT=1 to bypass."
+    fi
+    say "$f passed under act"
+  done <<<"$files"
+}
+
+# ---------------------------------------------------------------- chaining
+
+run_local_hook() {
+  # --git-common-dir, not --git-path hooks: the latter follows core.hooksPath and would look in the
+  # global directory under a --global install. Worktrees share the common dir.
+  local hooks_dir
+  hooks_dir=$(git rev-parse --git-common-dir 2>/dev/null)/hooks
+  if [ -x "$hooks_dir/pre-push.local" ]; then
+    # No exec, so the EXIT trap still removes the temp dir; the saved stdin goes back in.
+    "$hooks_dir/pre-push.local" "$@" <"$TMP/stdin"
+    exit $?
+  fi
+}
+
+main() {
+  guard_skip_all
+  cat >"$TMP/stdin"
+  cd "$(git rev-parse --show-toplevel)"
+  # Both skips cover the act phase only; the repo's own pre-push.local still runs.
+  if [ "${SKIP_PREPUSH_ACT:-0}" = "1" ]; then
+    say "SKIP_PREPUSH_ACT=1 set, skipping the local act run"
+  elif pushes_commits; then
+    phase_act
+  fi
+  run_local_hook "$@"
+}
+
+main "$@"

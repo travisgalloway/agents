@@ -212,6 +212,17 @@ sentinel work-active-11 "{\"issue\":11,\"stage\":\"exec\",\"branch\":\"f/11\",\"
 OTHER='{"hook_event_name":"Stop","background_tasks":[{"id":"1","type":"monitor","status":"running","description":"issue #7 exec: progress + stalls"}],"session_crons":[]}'
 assert_eq "another issue's monitor does NOT silence this stage" "2" "$(run_hook_payload "$OTHER")"
 
+# A teammate entry proves nothing: the 2026-10-10 payload listed teammates that had returned
+# hours earlier as "status":"running". Only a Monitor for the issue counts as watching.
+reset
+sentinel work-active-11 "{\"issue\":11,\"stage\":\"exec\",\"branch\":\"f/11\",\"owner\":\"o\",\"repo\":\"r\",\"session\":\"$MINE\"}"
+TEAMMATE='{"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"teammate","status":"running","description":"#11 plan stage"},{"id":"a1","type":"subagent","status":"running","agent_type":"work-exec","description":"#11 exec stage"}],"session_crons":[]}'
+assert_eq "a teammate naming this issue, with no Monitor → nudge" "2" "$(run_hook_payload "$TEAMMATE")"
+reset
+sentinel work-active-11 "{\"issue\":11,\"stage\":\"exec\",\"branch\":\"f/11\",\"owner\":\"o\",\"repo\":\"r\",\"session\":\"$MINE\"}"
+MARKER='{"hook_event_name":"Stop","background_tasks":[{"id":"m1","type":"monitor","status":"running","description":"watch","command":"# claude-work-monitor:s:#11"}],"session_crons":[]}'
+assert_eq "a Monitor found by its argv marker → silent" "0" "$(run_hook_payload "$MARKER")"
+
 # A scheduled wakeup is also "paused, not stalled" — and it is session-wide.
 reset
 sentinel work-active-11 "{\"issue\":11,\"stage\":\"exec\",\"branch\":\"f/11\",\"owner\":\"o\",\"repo\":\"r\",\"session\":\"$MINE\"}"

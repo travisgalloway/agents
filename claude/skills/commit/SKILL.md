@@ -76,15 +76,18 @@ Make a commit with conventional commit format:
    - **Phase A, act.** If a workflow under `.github/workflows` defines a `local-commit-check`
      job, it runs under `act workflow_dispatch -j local-commit-check`. Docker not running, or the
      job failing, rejects the commit and prints the failing step's output.
-   - **Phase B, review.** The staged diff goes to the Antigravity CLI (`agy`) for a structured
-     review by a Gemini model. A `high` finding rejects the commit and prints `file:line`, the
-     defect, and a suggestion. `medium` findings print as advisory; `low` findings are counted.
-     A review that cannot run (two failed attempts) also rejects; an unobservable check is not a
-     pass.
+   - **Phase B, review.** A headless Claude Code session runs `/code-review` on the staged change,
+     and a second, tool-less call sorts its findings into `high`, `medium` and `low`. A `high`
+     finding rejects the commit and prints `file:line`, the defect, and a suggestion. `medium`
+     findings print as advisory; `low` findings are counted. A review that cannot run (two failed
+     attempts, each bounded by `PRECOMMIT_REVIEW_TIMEOUT`) also rejects; an unobservable check is
+     not a pass.
 
    On a rejection, read the hook output, fix what it names, `git add -A`, and commit again. The
    bypasses are `SKIP_ACT=1`, `SKIP_REVIEW=1`, `SKIP_HOOKS=1`, or `git commit --no-verify`; use
    one only when the user asks for it, and never inside an autonomous `/work` stage.
+   A later `git push` runs the pre-push gate, which executes the `pull_request` workflows under
+   `act`. The `/pr` skill documents it.
 9. Display:
    - Commit type used
    - Full commit message

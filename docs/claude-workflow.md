@@ -11,7 +11,8 @@ One issue travels a fixed path from the backlog to a merged pull request.
 ```
 /backlog  enumerate, topologically sort, confirm once
    └── per issue:
-         /work        plan stage  -> work-plan agent (opus)   writes a plan file
+         /work        scout stage -> work-scout agent (haiku) maps relevant files
+                      plan stage  -> work-plan agent (opus)   writes a plan file
                       exec stage  -> work-exec agent (sonnet) implements it
          /pr          push the branch, open the pull request
          /automerge   drive to a squash merge
@@ -23,6 +24,13 @@ One issue travels a fixed path from the backlog to a merged pull request.
 The handoff between the plan and exec stages is a written file rather than conversation
 state. A run long enough to compact turns a remembered plan into a paraphrase, so the
 plan is written down and the exec agent reads it back.
+
+The scout stage reads files so the opus planner does not. A scout failure falls back to the
+planner exploring on its own.
+
+Two local gates run `act` before code leaves the machine. The pre-commit hook runs the
+`local-commit-check` job, and the pre-push hook runs `act pull_request` for each workflow
+that declares that trigger. A rejected push is output to fix, and no autonomous stage bypasses it.
 
 `/work` runs a single issue inline with full gating. Multiple issues or a description
 trigger orchestrated mode, where the main session only dispatches and verifies.

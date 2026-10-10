@@ -62,6 +62,15 @@ EOF
     ok "$base"
   fi
 
+  # A model pin outside the policy tiers (opus|sonnet|haiku|inherit) is a quiet routing bug.
+  local mv; mv=$(awk 'NR==1{next} /^---$/{exit} /^model:/{sub(/^model:[[:space:]]*/,""); print; exit}' "$f")
+  if [ -n "$mv" ]; then
+    case "$mv" in
+      opus|sonnet|haiku|inherit) ok "$base: model '$mv' is a policy tier" ;;
+      *) bad "$base: model '$mv' is not one of opus|sonnet|haiku|inherit" ;;
+    esac
+  fi
+
   # Cross-spelling trap, in both directions.
   if [ "$kind" = skill ] && echo "$keys" | grep -qx 'disallowedTools'; then
     bad "$base: uses agent spelling 'disallowedTools'; skills need 'disallowed-tools'"
@@ -75,7 +84,7 @@ section "Skills / commands"
 # Our own skills, by name — the directory also holds vendor/Cloudflare skills we do not lint.
 # Adding a skill here is REQUIRED: a new skill missing from this list is silently skipped, which
 # reads as a pass. Two false passes in this suite have already come from that shape.
-OURS=" automerge backlog ci closure-audit commit feature-closure pr reap reviews status sync work "
+OURS=" api-audit audit automerge backlog ci closure-audit commit design-audit feature-closure pr reap requirements-audit reviews status sync ux-audit work "
 EXPECTED=$(printf '%s' "$OURS" | wc -w | tr -d ' ')
 
 found=0
@@ -94,5 +103,13 @@ for f in "$ROOT"/agents/*.md; do
   [ -f "$f" ] || continue
   check_file "$f" "$AGENT_KEYS" agent
 done
+
+section "Settings"
+SETTINGS="$(cd "$(dirname "$0")/.." && pwd)/settings.json"
+if grep -qi fable "$SETTINGS"; then
+  bad "settings.json mentions fable"
+else
+  ok "settings.json has no fable reference"
+fi
 
 summary

@@ -31,6 +31,20 @@ prevents is *quiet* — it looks like success until much later.
   On 2026-09-04 that idiom left twenty busy loops running for 3h26m at 601.8% CPU, with the load
   average at 195.63. Capture each PID from `$!` on the line that starts the process.
 
+## Model routing
+
+Pick the cheapest model that can do the task well. Never use Fable.
+
+- When you dispatch `Agent`, pass `model: "haiku"` for file lookup, enumeration, and Explore.
+- Pass `model: "sonnet"` for implementation, remediation, review, and reading-heavy analysis.
+- Pass `model: "opus"` for Plan agents and design decisions.
+- A skill invoked mid-turn through the Skill tool never carries a `model:` pin, because a pin lasts
+  for the rest of the calling turn.
+- For symbol lookups, use whichever installed LSP (language server) matches the stack. Use grep
+  where no installed server covers the language.
+- Before searching a repo, read the "Repo map" in its `CLAUDE.md` and the cached map at
+  `~/.claude/lib/repo-map.sh path`.
+
 ## Monitors and health checks
 
 **A check that cannot observe its target reports BLIND, never healthy.** This is the most expensive

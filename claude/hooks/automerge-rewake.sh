@@ -173,7 +173,13 @@ crons_pending=""
 printf '%s' "$INPUT" | jq -e '(.session_crons // []) | length > 0' >/dev/null 2>&1 \
   && crons_pending=1
 
-# watching <issue> — true when something in flight names THIS issue.
+# watching <issue> — true when a /work Monitor for THIS issue is in flight.
+#
+# Monitor-shaped entries only. A teammate entry proves nothing about liveness: the 2026-10-10
+# payload listed teammates that had returned 4.5 hours earlier as `"status":"running"`, because
+# a returned teammate stays registered until TaskStop. Counting it let a finished plan teammate
+# ("#N …") silence the nudge for that issue's stuck exec stage indefinitely. A Monitor exists
+# only while it polls, and it is the thing that observes progress.
 #
 # Per-issue on purpose. A global "background_tasks is non-empty" test would let one issue's
 # Monitor silence every other stage under parallel>1 — the same shape as the single shared
@@ -182,7 +188,8 @@ printf '%s' "$INPUT" | jq -e '(.session_crons // []) | length > 0' >/dev/null 2>
 # claude-work-monitor:{session}:#{n}, so match on "#{n}" at a word boundary.
 watching() {   # watching <issue>
   [ "$bg_seen" = "listed" ] || return 1
-  printf '%s' "$bg_tasks" | grep -qE "(^|[^0-9])#$1([^0-9]|$)"
+  printf '%s' "$bg_tasks" | grep -E 'claude-work-monitor:|progress \+ stalls' \
+    | grep -qE "(^|[^0-9])#$1([^0-9]|$)"
 }
 
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
@@ -388,9 +395,11 @@ for sentinel in "$repo_root"/.claude/automerge-active "$repo_root"/.claude/autom
   # checks` is unusable for this: it exits 8 for "pending" and 1 for "failing", so its rc
   # cannot distinguish a real API failure from an ordinary CI state.
   # network/auth/rate limit → stay silent this round and keep the sentinel.
-  # headRefOid rides along for the progress fingerprint below — same call, still one rc.
+  # headRefOid rides along for the progress fingerprint below — same call, still one rc. So do
+  # mergeability and the head branch name, which decide whether a merge can be instructed at all.
   if ! pr_json=$(gh pr view "$pr" --repo "$owner/$repo" \
-       --json statusCheckRollup,reviewRequests,headRefOid 2>/dev/null) || [ -z "$pr_json" ]; then
+       --json statusCheckRollup,reviewRequests,headRefOid,headRefName,mergeable,mergeStateStatus,isDraft \
+       2>/dev/null) || [ -z "$pr_json" ]; then
     continue
   fi
 
@@ -415,6 +424,25 @@ for sentinel in "$repo_root"/.claude/automerge-active "$repo_root"/.claude/autom
   esac
 
   head_oid=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty' 2>/dev/null)
+  head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName // empty' 2>/dev/null)
+  merge_state=$(printf '%s' "$pr_json" | jq -r '"\(.mergeable // "")/\(.mergeStateStatus // "")"' 2>/dev/null)
+  # GitHub reports a draft as BLOCKED, so the draft flag is read on its own, as lib/merge-gate.sh does.
+  [ "$(printf '%s' "$pr_json" | jq -r '.isDraft // false' 2>/dev/null)" = "true" ] && merge_state="$merge_state/DRAFT"
+
+  # A local branch the PR does not have yet means a push is pending or was never made, and every
+  # reading above describes the OLD head. Observed 2026-10-10: "MERGE IT NOW" for a PR whose
+  # rebased push was still running. Judged only when the PR head exists locally and is not a
+  # descendant of the local branch; a remote that is merely AHEAD (gh pr update-branch, a push
+  # from elsewhere) is not this case, and an unfetched head is unknown, so both fall through.
+  local_oid=""; unpushed=""
+  if [ -n "$head_ref" ]; then
+    local_oid=$(git -C "$repo_root" rev-parse --verify --quiet "refs/heads/$head_ref" 2>/dev/null || true)
+  fi
+  if [ -n "$local_oid" ] && [ -n "$head_oid" ] && [ "$local_oid" != "$head_oid" ] \
+     && git -C "$repo_root" cat-file -e "$head_oid^{commit}" 2>/dev/null \
+     && ! git -C "$repo_root" merge-base --is-ancestor "$local_oid" "$head_oid" 2>/dev/null; then
+    unpushed=1
+  fi
 
   # The Claude code review runs as a GitHub Actions workflow, so its own check rows are part
   # of the statusCheckRollup read above — but only once the run exists. GitHub delivers the
@@ -460,7 +488,9 @@ for sentinel in "$repo_root"/.claude/automerge-active "$repo_root"/.claude/autom
   # every signal that moves while a merge is legitimately in flight: a new push (headRefOid),
   # a check starting or finishing (ci_counts), the review run appearing or completing
   # (review_state). No spaces in any component — progress_gate reads them back with `read`.
-  progress_gate "$sentinel" "${head_oid:-nohead}|$ci_counts|${review_state:-none}" "$REWAKE_STALL_CAP_AUTOMERGE"
+  # The local head and mergeability ride along too: a local rebase or commit is progress, and so
+  # is GitHub finishing its lazy mergeability computation.
+  progress_gate "$sentinel" "${head_oid:-nohead}|$ci_counts|${review_state:-none}|${local_oid:-nolocal}|${merge_state:-/}" "$REWAKE_STALL_CAP_AUTOMERGE"
   case $? in
     0) cap_notice_due "$sentinel" \
          && capped="$capped PR #$pr (automerge, no change in $(fmt_dur "$(stalled_for "$sentinel")") over $(rewake_count "$sentinel") nudges);"
@@ -469,10 +499,40 @@ for sentinel in "$repo_root"/.claude/automerge-active "$repo_root"/.claude/autom
 
   count=$(rewake_count "$sentinel")
   echo $((count + 1)) > "$counter"
-  if [ -n "$pending_ci" ] || [ -n "$review_pending" ]; then
+  if [ -n "$unpushed" ]; then
+    am_msgs="$am_msgs
+- PR #$pr ($owner/$repo): the local branch $head_ref is at ${local_oid:0:8}, but the PR head is ${head_oid:0:8}. A push is pending or the commits are unpushed, so the CI and review readings describe the old head. Do not merge. Check the push (is it still running? did it fail?), and once the new head is on the PR, wait for its CI and review."
+  elif [ -n "$pending_ci" ] || [ -n "$review_pending" ]; then
     am_msgs="$am_msgs
 - PR #$pr ($owner/$repo): CI and/or the Claude code review still pending. Re-check status (gh pr view --json statusCheckRollup, and the claude-review workflow run for the head SHA) and continue the /automerge remediation loop, honoring its caps (CI 30m, review 15m)."
   else
+    # Mergeability decides whether a merge instruction is even possible. The states mirror
+    # lib/merge-gate.sh, except BLOCKED: the gate dispatches on it (a review may still land), but
+    # a merge attempted while BLOCKED fails, so it is not an instruction to merge.
+    # Observed 2026-10-10: "MERGE IT NOW" for a PR that gh reported CONFLICTING.
+    case "$merge_state" in
+      CONFLICTING/*|*/DIRTY)
+        am_msgs="$am_msgs
+- PR #$pr ($owner/$repo): conflicts with its base ($merge_state). It cannot be merged. Rebase or resolve, push, and re-wait CI. If the conflict cannot be resolved here, that is a Stop condition: stop and name it."
+        continue ;;
+      */BEHIND)
+        am_msgs="$am_msgs
+- PR #$pr ($owner/$repo): behind its base ($merge_state). Do not merge yet. /automerge Step 3 runs gh pr update-branch and then re-waits CI."
+        continue ;;
+      */DRAFT|*/DRAFT/*)
+        am_msgs="$am_msgs
+- PR #$pr ($owner/$repo): is a draft ($merge_state). A draft cannot be merged, and that is a Stop condition: stop and name it."
+        continue ;;
+      */BLOCKED)
+        am_msgs="$am_msgs
+- PR #$pr ($owner/$repo): blocked by a required review or branch rule ($merge_state). Do not force the merge. Continue the /automerge loop, honoring its caps (CI 30m, review 15m)."
+        continue ;;
+      MERGEABLE/CLEAN|MERGEABLE/HAS_HOOKS|MERGEABLE/UNSTABLE) : ;;
+      *)
+        am_msgs="$am_msgs
+- PR #$pr ($owner/$repo): CI is done, but GitHub has not computed mergeability yet (${merge_state:-unreadable}). Re-check gh pr view --json mergeable,mergeStateStatus before any merge."
+        continue ;;
+    esac
     # The quietest stall of all: everything finished but the merge never ran. There may be
     # no "next poll" to defer to — this hook fires at turn-end, and the merge wait's own
     # polling loop is exactly what may have stopped. Lead with the merge as ONE imperative
@@ -497,7 +557,7 @@ cap_text() {
 if [ -n "$am_msgs" ]; then
   echo "An automerge wait is still active and your turn ended — this hook cannot tell whether you idled or simply finished a reply, so treat it as a prompt to check rather than a verdict:$am_msgs
 
-It will not raise the same PR again for 10 minutes. Do not stop until each PR above is merged or a genuine Stop condition is hit.$(cap_text)" >&2
+It will not raise the same PR again for 10 minutes. Stop when each PR above is merged, or when a line above names a Stop condition and you have named it.$(cap_text)" >&2
   exit 2
 fi
 
@@ -666,7 +726,7 @@ echo "A /work stage looks UNWATCHED:${live%;}.
 
 What this hook observed, and nothing more: a sentinel for that stage is on disk, your turn ended, and the harness listed no in-flight background work naming that issue. It does NOT know whether you idled or simply finished a reply — a sentinel is armed before dispatch and removed at stage end, so it is present for the whole stage. Treat this as one reading to check, not as a verdict.
 
-That reading is why this fires at all now: while a Monitor or teammate for the issue IS listed as in flight, this hook stays silent, because the session is paused waiting to be woken rather than stalled. It will not nudge the same stage again for 10 minutes.
+That reading is why this fires at all now: while a Monitor for the issue IS listed as in flight, this hook stays silent (a teammate entry does not count, because a returned teammate stays listed as running until TaskStop), because the session is paused waiting to be woken rather than stalled. It will not nudge the same stage again for 10 minutes.
 
 Read each field for what it is. 'lookup-failed' means gh could not be reached and the PR's state is UNKNOWN; 'not-queried' means the sentinel carries no branch; 'in-flight work UNREADABLE' means the payload did not carry that list. None of those is evidence of an absence — go and look before concluding anything from them.
 

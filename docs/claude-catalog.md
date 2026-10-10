@@ -27,9 +27,10 @@ absolute path in those positions.
 | `code-reviewer.md` | Reviews a diff against a quality and security checklist, bucketing findings as critical, warning, or suggestion. |
 | `debugger.md` | Runs root-cause analysis on errors, test failures, and unexpected behavior. |
 | `remediator.md` | Runs `/reviews auto` or `/ci auto` for one pull request on behalf of `/automerge`, and reports a one-line outcome. |
+| `work-scout.md` | Scout stage of the `/work` pipeline, pinned to haiku. Maps the files relevant to one issue and refreshes the cached repo map for the opus planner. |
 | `work-plan.md` | Plan stage of the `/work` pipeline. Explores the codebase for one issue and writes a plan file carrying a definition of done. |
 | `work-exec.md` | Exec stage. Implements an approved plan file to a finished pull request, parking every out-of-scope discovery. |
-| `work-exec-opus.md` | The same body as `work-exec.md`, pinned to opus at medium effort. Selected by the `opus` token on a `/work` invocation. |
+| `work-exec-opus.md` | The same body as `work-exec.md`, pinned to opus at medium effort. Selected per issue by the plan's `## Exec model` section, or for a whole run by the `opus` token. |
 
 ## `commands/` — slash commands
 
@@ -41,7 +42,9 @@ absolute path in those positions.
 
 | File | What it does |
 |---|---|
-| `pre-commit` | The per-repo commit gate. Runs the repository's `local-commit-check` job under `act`, then sends the staged diff to the Antigravity CLI for a structured review; a `high` finding, a failing job, or a check that cannot be observed rejects the commit. Reached through a two-line shim that `install/install-hooks.sh` writes into a repository's hooks directory. |
+| `pre-commit` | The per-repo commit gate. Runs the repository's `local-commit-check` job under `act`, then runs Claude Code's `/code-review` on the staged change and sorts its findings by severity; a `high` finding, a failing job, or a check that cannot be observed rejects the commit. Reached through a two-line shim that `install/install-hooks.sh` writes into a repository's hooks directory. |
+| `pre-push` | The per-repo push gate. Runs `act pull_request` for each workflow that declares a `pull_request` trigger before a push; a failing job or an unavailable Docker daemon rejects the push. |
+| `lib/act-run.sh` | Sourced by both hooks. Runs each long child in its own process group under a watchdog, stops the whole group on a timeout or a signal (TERM, then KILL after `HOOK_STOP_GRACE` seconds), and runs `act` with `--rm`. A sweep afterwards removes containers the run left, found by a per-run label or, for a job that sets `container:`, by an `act-` container that mounts the repository path and did not exist before the run. |
 
 ## `hooks/` — event handlers
 
@@ -57,6 +60,7 @@ absolute path in those positions.
 | File | What it does |
 |---|---|
 | `branches.sh` | Emits the repository facts every skill needs as key-value pairs. Injected into eight skills. Contractually never exits non-zero and never writes to standard error. |
+| `repo-map.sh` | Resolves the cached repo map shared by every worktree of a repository, and lists the paths changed since its stamp. Used by the scout stage. |
 | `branch-name.sh` | The single definition of what a branch name means. Sourced by the other three libraries, never executed. |
 | `merge-gate.sh` | Answers one question before a queued pull request takes the merge slot: does it still apply to the base as the base now stands. |
 | `backlog-preflight.sh` | The twelve guards `/backlog` runs before dispatching a stage. A dirty tree is stashed rather than discarded. |
@@ -74,14 +78,19 @@ Twelve skills, 17 files. The vendored Cloudflare skills are not tracked here; se
 | `backlog` | opus | Drives an entire open backlog to merged pull requests, dependency-ordered, one issue at a time. Ledger-backed, so a run survives compaction and a session restart. |
 | `automerge` | inherited | Drives already-open pull requests to a squash merge, remediating reviews and continuous integration without asking. Plan mode and questions are disallowed by frontmatter. |
 | `closure-audit` | opus | Audits a repository and its backlog for half-finished work, coverage gaps, and contract drift, then grooms the backlog so it can be closed. |
+| `audit` | opus | Runs every audit lens (closure, design, api, requirements, ux) under one confirmation gate, in two waves of parallel subagents, and dedupes findings across lenses. |
+| `design-audit` | opus | Reviews an implementation against its design notes, ADRs and contracts, and for architectural soundness: layering, cycles, authorization, error handling and concurrency. |
+| `api-audit` | opus | Reviews the API surface against its own majority convention, and the data model for migration safety, missing indexes and drift between schema and code. |
+| `requirements-audit` | opus | Verifies that issues closed as completed satisfy their acceptance criteria. Comments on an issue that does not, and never reopens it. |
+| `ux-audit` | opus | Reviews interface source for accessibility and state handling, then starts the app and drives it with Playwright at three widths. |
 | `reviews` | inherited | Fetches, analyzes, and remediates pull-request review comments, then resolves the threads. |
 | `ci` | inherited | Checks continuous-integration status for the current pull request and remediates failures. |
 | `pr` | inherited | Pushes the current feature branch and opens its pull request. Deliberately narrow, so it is not treated as a general git helper. |
 | `feature-closure` | inherited | Keeps coding work converging on an agreed scope. Five reference files cover decomposition, execution, repository norms, living documentation, and gap detection. |
 | `reap` | sonnet | Tears down everything a session still has running before a clear: agents, monitors, teammates, orphaned processes, sentinels, and worktrees. |
 | `commit` | inherited | Makes a formatted commit carrying its issue reference. |
-| `status` | sonnet | Shows development status for the active feature branch: issue, checklist progress, and git statistics. |
-| `sync` | sonnet | Syncs the release, integration, and current branches with the remote. |
+| `status` | haiku | Shows development status for the active feature branch: issue, checklist progress, and git statistics. |
+| `sync` | haiku | Syncs the release, integration, and current branches with the remote. |
 
 ## `tests/` — regression suites
 
@@ -108,8 +117,9 @@ configuration first, so the real git identity is never written.
 | `work-probes.sh` | The arm-time monitor probe, including a scope-bearing branch name under zsh. |
 | `backlog-guards.sh` | The asymmetry between the two branch scans: the guard refuses broadly, the teardown deletes exactly. |
 | `closure-audit-guards.sh` | Three irreversible-act invariants, and the three distinct meanings of a zero denominator. |
+| `review-audit-guards.sh` | A finding ID stable across edits, a UX dev server that always ends, untruncated backlog fetches, and the five-agent wave cap. |
 | `stage-processes.sh` | The sweep that ends a stage's orphaned processes. Reproduces the leak rather than describing it, and pins that a missing snapshot reports blind rather than clean. |
-| `precommit-hook.sh` | The commit gate, with `act`, `docker`, and `agy` stubbed on a restricted path. A check that cannot run rejects, a high finding rejects with `file:line`, lockfiles never reach the prompt, and a displaced project hook still runs last. |
+| `precommit-hook.sh` | The commit gate, with `act`, `docker`, and `claude` stubbed on a restricted path. A check that cannot run or times out rejects, a high finding rejects with `file:line`, a lockfile-only change calls no review, and a displaced project hook still runs last. |
 | `reference-integrity.sh` | Every section citation resolves, every referenced document exists, and every dynamic-context injection names an absolute path. |
 | `skill-blocks-portability.sh` | Every bash fence in an authored skill runs under zsh, which is the shell that actually runs it. |
 | `reap-orphans.sh` | Which orphaned processes are adoptable, and that another session's process is never ended. |

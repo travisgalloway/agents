@@ -105,7 +105,10 @@ probe() {
 # Every fixture carries headRefOid: the hook keys its review lookup on the head commit, and
 # a fixture without one skips that lookup entirely — which would leave the review path in
 # this suite untested while every assertion still passed.
-CLEAN='{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"abc123"}'
+# CLEAN also carries a mergeable state: the hook instructs a merge only for MERGEABLE with
+# CLEAN, HAS_HOOKS or UNSTABLE. headRefName names a branch the scratch repo does not have, so
+# the unpushed-head check stays out of every case except its own.
+CLEAN='{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"abc123","headRefName":"no-such-branch","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}'
 PENDING='{"statusCheckRollup":[{"status":"IN_PROGRESS"}],"headRefOid":"abc123"}'
 LEGACY='{"statusCheckRollup":[{"state":"PENDING"}],"headRefOid":"abc123"}'
 BROKEN='{"statusCheckRollup":"not-an-array","headRefOid":"abc123"}'
@@ -132,6 +135,59 @@ assert_contains "message leads with the merge" "$out" "MERGE IT NOW"
 assert_contains "and demands the merge be verified" "$out" "MERGED"
 # The old multi-step opener is what the agent kept stopping halfway through.
 assert_not_contains "no 'resume at §2.5' preamble" "$out" "Resume /automerge at §2.5"
+
+section "CI done but the PR cannot merge → name the state, never MERGE IT NOW"
+# Observed 2026-10-10: the hook told the agent to merge a PR that gh reported CONFLICTING.
+done_with() { printf '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"abc123","headRefName":"no-such-branch","mergeable":"%s","mergeStateStatus":"%s"}' "$1" "$2"; }
+arm; probe GH_ROLLUP="$(done_with CONFLICTING DIRTY)"
+assert_eq "exit 2 (rewake) on a conflict" "2" "$RC"
+assert_contains "names the conflict" "$out" "conflicts with its base (CONFLICTING/DIRTY)"
+assert_not_contains "no merge instruction on a conflict" "$out" "MERGE IT NOW"
+arm; probe GH_ROLLUP="$(done_with MERGEABLE BEHIND)"
+assert_contains "BEHIND routes to update-branch" "$out" "gh pr update-branch"
+assert_not_contains "no merge instruction while BEHIND" "$out" "MERGE IT NOW"
+arm; probe GH_ROLLUP="$(done_with MERGEABLE BLOCKED)"
+assert_contains "BLOCKED is named" "$out" "blocked by a required review"
+assert_not_contains "no merge instruction while BLOCKED" "$out" "MERGE IT NOW"
+arm; probe GH_ROLLUP="$(done_with MERGEABLE BLOCKED | jq -c '. + {isDraft: true}')"
+assert_contains "a draft is a named Stop condition" "$out" "is a draft"
+assert_not_contains "no merge instruction for a draft" "$out" "MERGE IT NOW"
+arm; probe GH_ROLLUP="$(done_with UNKNOWN UNKNOWN)"
+assert_contains "UNKNOWN asks for a re-check" "$out" "has not computed mergeability"
+assert_not_contains "no merge instruction on UNKNOWN" "$out" "MERGE IT NOW"
+arm; probe GH_ROLLUP="$(done_with MERGEABLE UNSTABLE)"
+assert_contains "UNSTABLE still merges, as in lib/merge-gate.sh" "$out" "MERGE IT NOW"
+assert_contains "the notice gives a defined exit" "$out" "Stop when each PR above is merged"
+assert_not_contains "no unconditional 'do not stop'" "$out" "Do not stop until"
+
+section "A local head the PR does not have yet → push pending, never MERGE IT NOW"
+# Observed 2026-10-10: "MERGE IT NOW" while the rebased push was still running, so every
+# reading described the old head.
+git -C "$REPO" checkout -qb feat
+old=$(git -C "$REPO" rev-parse HEAD)
+echo y > "$REPO/y"; git -C "$REPO" add y; git -C "$REPO" commit -qm rebased
+new=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" reset -q --hard "$old"
+git -C "$REPO" checkout -q --detach "$old"
+git -C "$REPO" branch -qf feat "$new"
+# Rewrite feat so it no longer descends from the PR head, as a rebase does.
+git -C "$REPO" checkout -q --orphan rebased-tmp; git -C "$REPO" commit -qm rebased --allow-empty
+rebased=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" branch -qf feat "$rebased"; git -C "$REPO" checkout -q --detach "$old"; git -C "$REPO" branch -qD rebased-tmp
+at_head() { printf '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"%s","headRefName":"feat","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}' "$1"; }
+arm; probe GH_ROLLUP="$(at_head "$old")"
+assert_eq "exit 2 (rewake) with a push pending" "2" "$RC"
+assert_contains "says the push is pending" "$out" "A push is pending or the commits are unpushed"
+assert_not_contains "no merge instruction for the old head" "$out" "MERGE IT NOW"
+git -C "$REPO" branch -qf feat "$old"
+arm; probe GH_ROLLUP="$(at_head "$old")"
+assert_contains "local == PR head merges normally" "$out" "MERGE IT NOW"
+# $new is a child of $old, so a PR at $new with feat at $old is a remote that is merely ahead.
+git -C "$REPO" branch -qf feat "$old"
+arm; probe GH_ROLLUP="$(at_head "$new")"
+assert_contains "a remote merely ahead of local is not a pending push" "$out" "MERGE IT NOW"
+arm; probe GH_ROLLUP="$(at_head 0123456789012345678901234567890123456789)"
+assert_not_contains "an unfetched PR head is unknown, not a pending push" "$out" "A push is pending"
 
 section "Genuinely pending → rewake, but do not suggest merging"
 arm; probe GH_ROLLUP="$PENDING"

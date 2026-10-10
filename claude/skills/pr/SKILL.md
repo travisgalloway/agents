@@ -142,6 +142,13 @@ Create a pull request for the current feature branch:
 
 11. Push the current branch to origin: `git push -u origin "{branch_name}"`
 
+    When the repository has the pre-push gate installed (`install/install-hooks.sh` writes a shim
+    into `.git/hooks/pre-push`), the push first runs each `pull_request` workflow under
+    `act pull_request -W <file>`. Docker not running, a failing job, or a timeout rejects the push
+    and prints the failing step's output. Fix what the output names and push again. The bypasses are
+    `SKIP_PREPUSH_ACT=1`, `SKIP_HOOKS=1`, or `git push --no-verify`; use one only when the user asks
+    for it, and never inside an autonomous `/work` stage.
+
 12. Create the PR using `gh pr create`:
 
     ```bash
