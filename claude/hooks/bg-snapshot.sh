@@ -58,7 +58,10 @@ if printf '%s' "$INPUT" | jq -e 'has("background_tasks")' >/dev/null 2>&1; then
               name:        ((.name // "")        | tostring),
               description: ((.description // "") | tostring),
               agent_type:  ((.agent_type // .agentType // "") | tostring),
-              command:     ((.command // "")     | tostring) } ]
+              type:        ((.type // "")        | tostring),
+              status:      ((.status // .state // "") | tostring),
+              command:     ((.command // "")     | tostring),
+              keys:        (if type == "object" then keys else [] end) } ]
         | { seen: (if length == 0 then "none" else "listed" end), at: $at, tasks: . }
       ' 2>/dev/null); then
     :

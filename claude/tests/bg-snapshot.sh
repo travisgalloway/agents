@@ -42,6 +42,14 @@ assert_eq "description preserved (per-issue matching needs it)" "issue #7 monito
 assert_contains "stamped with a read time" "$(field "$s" '.at|tostring')" ""
 [ -n "$(field "$s" .at)" ] && ok "at is populated" || bad "at is empty — staleness unmeasurable"
 
+section "type and status are kept, so /reap sees what the hook saw"
+# Kept as reported. A returned teammate still reads "running" until TaskStop, so neither field
+# is a liveness signal on its own; automerge-rewake.sh counts only Monitor entries.
+run '{"session_id":"s-ts","background_tasks":[{"id":"t1","type":"teammate","status":"running","description":"#3 plan"}]}'
+assert_eq "type kept" "teammate" "$(field "$(snap s-ts)" '.tasks[0].type')"
+assert_eq "status kept" "running" "$(field "$(snap s-ts)" '.tasks[0].status')"
+assert_eq "raw keys kept" "description,id,status,type" "$(field "$(snap s-ts)" '.tasks[0].keys | join(",")')"
+
 section "none — observed empty, which is a real answer"
 run '{"session_id":"s2","background_tasks":[]}'
 assert_eq "seen=none" "none" "$(field "$(snap s2)" .seen)"
@@ -75,7 +83,7 @@ section "No session_id is a no-op"
 out=$(printf '%s' '{"cwd":"/tmp","background_tasks":[{"id":"t1"}]}' | HOME="$WORK" bash "$HOOK" 2>&1; echo "rc=$?")
 assert_eq "exits 0 silently" "rc=0" "$out"
 n=$(find "$RUN" -name 'bg-tasks-*.json' 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "wrote nothing unscoped" "6" "$n"   # s1-s6 only
+assert_eq "wrote nothing unscoped" "7" "$n"   # s1-s6 and s-ts only
 
 section "Session-scoped — one session never clobbers another"
 run '{"session_id":"s1","background_tasks":[]}'
